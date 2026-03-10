@@ -9,15 +9,18 @@
 #include "SaveState.h"
 #include "PINE.h"
 #include "VMManager.h"
+#include "DebugTools/Breakpoints.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <span>
 #include <sys/types.h>
 #include <thread>
+#include <unordered_set>
 
 #include "fmt/format.h"
 
@@ -136,6 +139,13 @@ namespace PINEServer
 	static std::vector<u8> s_ipc_buffer;
 
 	/**
+	 * Set of EE PC addresses registered as PINE breakpoints.
+	 * Guarded by s_bp_mutex.
+	 */
+	static std::unordered_set<u32> s_breakpoints;
+	static std::mutex s_bp_mutex;
+
+	/**
 	 * IPC Command messages opcodes.
 	 * A list of possible operations possible by the IPC.
 	 * Each one of them is what we call an "opcode" and is the first
@@ -159,6 +169,14 @@ namespace PINEServer
 		MsgUUID = 0xD, /**< Returns the game UUID. */
 		MsgGameVersion = 0xE, /**< Returns the game verion. */
 		MsgStatus = 0xF, /**< Returns the emulator status. */
+		MsgGetProgramCounter = 0x10, /**< Read EE program counter and pause state. */
+		MsgPause = 0x11, /**< Pause EE execution. */
+		MsgResume = 0x12, /**< Resume EE execution. */
+		MsgStep = 0x13, /**< Execute one EE instruction while paused. */
+		MsgSetBreakpoint = 0x14, /**< Add a PC breakpoint at an EE address. */
+		MsgClearBreakpoint = 0x15, /**< Remove the breakpoint at an EE address. */
+		MsgClearAllBreakpoints = 0x16, /**< Remove all PC breakpoints. */
+		MsgGetRegisters = 0x17, /**< Read EE GPRs, HI/LO, and PC. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -747,6 +765,113 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				ToResultVector(ret_buffer, status, ret_cnt);
 				ret_cnt += 4;
 				break;
+			}
+			case MsgGetProgramCounter:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 5, buf_size)) [[unlikely]]
+					goto error;
+				ToResultVector(ret_buffer, cpuRegs.pc, ret_cnt);
+				ret_cnt += 4;
+				ret_buffer[ret_cnt] = (VMManager::GetState() == VMState::Paused) ? 1 : 0;
+				ret_cnt += 1;
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgPause:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (!VMManager::HasValidVM())
+					goto error;
+				VMManager::SetPaused(true);
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgResume:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (!VMManager::HasValidVM())
+					goto error;
+				VMManager::SetPaused(false);
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgStep:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4, buf_size)) [[unlikely]]
+					goto error;
+				Host::RunOnCPUThread([]() { Cpu->Step(); }, true);
+				ToResultVector(ret_buffer, cpuRegs.pc, ret_cnt);
+				ret_cnt += 4;
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgSetBreakpoint:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				{
+					std::lock_guard<std::mutex> lock(s_bp_mutex);
+					if (s_breakpoints.insert(addr).second)
+						CBreakPoints::AddBreakPoint(BREAKPOINT_EE, addr);
+				}
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgClearBreakpoint:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				{
+					std::lock_guard<std::mutex> lock(s_bp_mutex);
+					if (s_breakpoints.erase(addr) == 0)
+						goto error;
+					CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
+				}
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgClearAllBreakpoints:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				{
+					std::lock_guard<std::mutex> lock(s_bp_mutex);
+					for (const u32 addr : s_breakpoints)
+						CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
+					s_breakpoints.clear();
+				}
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+			}
+			case MsgGetRegisters:
+			{
+				if (buf_cnt != 1)
+					goto error;
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 140, buf_size)) [[unlikely]]
+					goto error;
+				for (int i = 0; i < 32; i++)
+				{
+					ToResultVector(ret_buffer, cpuRegs.GPR.r[i].UL[0], ret_cnt);
+					ret_cnt += 4;
+				}
+				ToResultVector(ret_buffer, cpuRegs.pc, ret_cnt);
+				ret_cnt += 4;
+				ToResultVector(ret_buffer, cpuRegs.HI.UL[0], ret_cnt);
+				ret_cnt += 4;
+				ToResultVector(ret_buffer, cpuRegs.LO.UL[0], ret_cnt);
+				ret_cnt += 4;
+				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
 			}
 			default:
 			{
