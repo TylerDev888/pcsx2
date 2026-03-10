@@ -262,6 +262,13 @@ namespace PINEServer
 
 bool PINEServer::Initialize(int slot)
 {
+	// Refuse to initialize if a server is already running in this process.
+	if (IsInitialized())
+	{
+		Console.WriteLn(Color_Yellow, "PINE: A server is already running on slot %d. Skipping initialization.", slot);
+		return false;
+	}
+
 	s_end.store(false, std::memory_order_release);
 	s_slot = slot;
 
@@ -273,12 +280,39 @@ bool PINEServer::Initialize(int slot)
 		return false;
 	}
 
+	// Probe whether another process is already listening on this TCP port.
+	{
+		SOCKET probe = socket(AF_INET, SOCK_STREAM, 0);
+		if (probe != INVALID_SOCKET)
+		{
+			sockaddr_in probe_addr = {};
+			probe_addr.sin_family = AF_INET;
+			probe_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			probe_addr.sin_port = htons(static_cast<u_short>(slot));
+			if (connect(probe, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0)
+			{
+				closesocket(probe);
+				Console.WriteLn(Color_Red, "PINE: A server is already listening on port %d. Shutting down...", slot);
+				s_end.store(true, std::memory_order_release);
+				return false;
+			}
+			closesocket(probe);
+		}
+	}
+
 	s_sock = socket(AF_INET, SOCK_STREAM, 0);
-	if ((s_sock == INVALID_SOCKET) || slot > 65536)
+	if ((s_sock == INVALID_SOCKET) || slot > 65535)
 	{
 		Console.WriteLn(Color_Red, "PINE: Cannot open socket! Shutting down...");
 		Deinitialize();
 		return false;
+	}
+
+	// Prevent address reuse so two instances cannot silently share the same port.
+	{
+		BOOL exclusive = TRUE;
+		if (setsockopt(s_sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) == SOCKET_ERROR)
+			Console.WriteLn(Color_Yellow, "PINE: Could not set SO_EXCLUSIVEADDRUSE (error %d); duplicate servers may go undetected.", WSAGetLastError());
 	}
 
 	sockaddr_in server = {};
@@ -315,6 +349,29 @@ bool PINEServer::Initialize(int slot)
 
 	struct sockaddr_un server;
 
+	// Probe whether another process is already listening on this Unix socket.
+	// Only unlink a stale (dead) socket file; refuse to replace a live server.
+	{
+		int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (probe >= 0)
+		{
+			struct sockaddr_un probe_addr;
+			probe_addr.sun_family = AF_UNIX;
+			StringUtil::Strlcpy(probe_addr.sun_path, s_socket_name, sizeof(probe_addr.sun_path));
+			if (connect(probe, reinterpret_cast<struct sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0)
+			{
+				close(probe);
+				Console.WriteLn(Color_Red, "PINE: A server is already listening on %s. Shutting down...", s_socket_name.c_str());
+				s_socket_name = {};
+				s_end.store(true, std::memory_order_release);
+				return false;
+			}
+			close(probe);
+		}
+		// No live server — safe to remove a stale socket file if it exists.
+		unlink(s_socket_name.c_str());
+	}
+
 	s_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (s_sock < 0)
 	{
@@ -325,9 +382,6 @@ bool PINEServer::Initialize(int slot)
 	server.sun_family = AF_UNIX;
 	StringUtil::Strlcpy(server.sun_path, s_socket_name, sizeof(server.sun_path));
 
-	// we unlink the socket so that when releasing this thread the socket gets
-	// freed even if we didn't close correctly the loop
-	unlink(s_socket_name.c_str());
 	if (bind(s_sock, (struct sockaddr*)&server, sizeof(struct sockaddr_un)))
 	{
 		Console.WriteLn(Color_Red, "PINE: Error while binding to socket! Shutting down...");
