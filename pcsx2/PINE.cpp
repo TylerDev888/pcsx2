@@ -9,6 +9,8 @@
 #include "SaveState.h"
 #include "PINE.h"
 #include "VMManager.h"
+#include "DebugTools/Breakpoints.h"
+#include "R5900.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
@@ -159,6 +161,14 @@ namespace PINEServer
 		MsgUUID = 0xD, /**< Returns the game UUID. */
 		MsgGameVersion = 0xE, /**< Returns the game verion. */
 		MsgStatus = 0xF, /**< Returns the emulator status. */
+		MsgGetProgramCounter   = 0x10, /**< Returns EE PC and pause state. */
+		MsgPause               = 0x11, /**< Pauses the emulator. */
+		MsgResume              = 0x12, /**< Resumes the emulator. */
+		MsgStep                = 0x13, /**< Steps one EE instruction. */
+		MsgSetBreakpoint       = 0x14, /**< Sets a breakpoint at the given EE address. */
+		MsgClearBreakpoint     = 0x15, /**< Clears a breakpoint at the given EE address. */
+		MsgClearAllBreakpoints = 0x16, /**< Clears all EE breakpoints. */
+		MsgGetRegisters        = 0x17, /**< Returns EE GPRs, PC, HI, LO. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -258,7 +268,15 @@ namespace PINEServer
 		return !((command_len + command_size) > buf_size ||
 				 (reply_len + reply_size) >= MAX_IPC_RETURN_SIZE);
 	}
-} // namespace PINEServer
+}
+
+	static inline u32 NormalizePcKseg0(u32 vaddr)
+	{
+		if ((vaddr & 0xE0000000u) == 0xA0000000u)
+			return (vaddr & 0x1FFFFFFFu) | 0x80000000u;
+		return vaddr;
+	}
+ // namespace PINEServer
 
 bool PINEServer::Initialize(int slot)
 {
@@ -802,7 +820,137 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				ret_cnt += 4;
 				break;
 			}
-			default:
+			case MsgGetProgramCounter:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 5, buf_size)) [[unlikely]]
+					goto error;
+
+				u32 pc = 0;
+				u8 paused = 0;
+				Host::RunOnCPUThread([&]() {
+					pc = NormalizePcKseg0(cpuRegs.pc);
+					paused = (VMManager::GetState() == VMState::Paused) ? 1 : 0;
+				}, true);
+
+				ToResultVector(ret_buffer, pc, ret_cnt);
+				ret_cnt += 4;
+				ret_buffer[ret_cnt++] = paused;
+				break;
+			}
+			case MsgPause:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::SetPaused(true); }, true);
+				break;
+			}
+			case MsgResume:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::SetPaused(false); }, true);
+				break;
+			}
+			case MsgStep:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4, buf_size)) [[unlikely]]
+					goto error;
+
+				bool stepped = false;
+				u32 new_pc = 0;
+				Host::RunOnCPUThread([&]() {
+					if (VMManager::GetState() != VMState::Paused)
+						return;
+					intCpu.Step();
+					new_pc = NormalizePcKseg0(cpuRegs.pc);
+					stepped = true;
+				}, true);
+
+				if (!stepped)
+					goto error;
+
+				ToResultVector(ret_buffer, new_pc, ret_cnt);
+				ret_cnt += 4;
+				break;
+			}
+			case MsgSetBreakpoint:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				Host::RunOnCPUThread([addr]() {
+					CBreakPoints::AddBreakPoint(BREAKPOINT_EE, addr, false, true, false);
+				}, true);
+				buf_cnt += 4;
+				break;
+			}
+			case MsgClearBreakpoint:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				bool had_bp = false;
+				Host::RunOnCPUThread([addr, &had_bp]() {
+					had_bp = CBreakPoints::IsAddressBreakPoint(BREAKPOINT_EE, addr);
+					if (had_bp)
+						CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
+				}, true);
+				buf_cnt += 4;
+
+				if (!had_bp)
+					goto error;
+
+				break;
+			}
+			case MsgClearAllBreakpoints:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { CBreakPoints::ClearAllBreakPoints(); }, true);
+				break;
+			}
+			case MsgGetRegisters:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 140, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([&]() {
+					for (int i = 0; i < 32; i++)
+					{
+						ToResultVector(ret_buffer, cpuRegs.GPR.r[i].UL[0], ret_cnt);
+						ret_cnt += 4;
+					}
+					ToResultVector(ret_buffer, NormalizePcKseg0(cpuRegs.pc), ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, cpuRegs.HI.UL[0], ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, cpuRegs.LO.UL[0], ret_cnt);
+					ret_cnt += 4;
+				}, true);
+
+				break;
+			}			default:
 			{
 			error:
 				return IPCBuffer{5, MakeFailIPC(ret_buffer)};
