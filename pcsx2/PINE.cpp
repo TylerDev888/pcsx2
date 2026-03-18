@@ -10,6 +10,7 @@
 #include "PINE.h"
 #include "VMManager.h"
 #include "DebugTools/Breakpoints.h"
+#include "R5900.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
@@ -169,14 +170,14 @@ namespace PINEServer
 		MsgUUID = 0xD, /**< Returns the game UUID. */
 		MsgGameVersion = 0xE, /**< Returns the game verion. */
 		MsgStatus = 0xF, /**< Returns the emulator status. */
-		MsgGetProgramCounter = 0x10, /**< Read EE program counter and pause state. */
-		MsgPause = 0x11, /**< Pause EE execution. */
-		MsgResume = 0x12, /**< Resume EE execution. */
-		MsgStep = 0x13, /**< Execute one EE instruction while paused. */
-		MsgSetBreakpoint = 0x14, /**< Add a PC breakpoint at an EE address. */
-		MsgClearBreakpoint = 0x15, /**< Remove the breakpoint at an EE address. */
-		MsgClearAllBreakpoints = 0x16, /**< Remove all PC breakpoints. */
-		MsgGetRegisters = 0x17, /**< Read EE GPRs, HI/LO, and PC. */
+		MsgGetProgramCounter   = 0x10, /**< Returns EE PC and pause state. */
+		MsgPause               = 0x11, /**< Pauses the emulator. */
+		MsgResume              = 0x12, /**< Resumes the emulator. */
+		MsgStep                = 0x13, /**< Steps one EE instruction. */
+		MsgSetBreakpoint       = 0x14, /**< Sets a breakpoint at the given EE address. */
+		MsgClearBreakpoint     = 0x15, /**< Clears a breakpoint at the given EE address. */
+		MsgClearAllBreakpoints = 0x16, /**< Clears all EE breakpoints. */
+		MsgGetRegisters        = 0x17, /**< Returns EE GPRs, PC, HI, LO. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -276,10 +277,25 @@ namespace PINEServer
 		return !((command_len + command_size) > buf_size ||
 				 (reply_len + reply_size) >= MAX_IPC_RETURN_SIZE);
 	}
-} // namespace PINEServer
+}
+
+	static inline u32 NormalizePcKseg0(u32 vaddr)
+	{
+		if ((vaddr & 0xE0000000u) == 0xA0000000u)
+			return (vaddr & 0x1FFFFFFFu) | 0x80000000u;
+		return vaddr;
+	}
+ // namespace PINEServer
 
 bool PINEServer::Initialize(int slot)
 {
+	// Refuse to initialize if a server is already running in this process.
+	if (IsInitialized())
+	{
+		Console.WriteLn(Color_Yellow, "PINE: A server is already running on slot %d. Skipping initialization.", slot);
+		return false;
+	}
+
 	s_end.store(false, std::memory_order_release);
 	s_slot = slot;
 
@@ -291,12 +307,39 @@ bool PINEServer::Initialize(int slot)
 		return false;
 	}
 
+	// Probe whether another process is already listening on this TCP port.
+	{
+		SOCKET probe = socket(AF_INET, SOCK_STREAM, 0);
+		if (probe != INVALID_SOCKET)
+		{
+			sockaddr_in probe_addr = {};
+			probe_addr.sin_family = AF_INET;
+			probe_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			probe_addr.sin_port = htons(static_cast<u_short>(slot));
+			if (connect(probe, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0)
+			{
+				closesocket(probe);
+				Console.WriteLn(Color_Red, "PINE: A server is already listening on port %d. Shutting down...", slot);
+				s_end.store(true, std::memory_order_release);
+				return false;
+			}
+			closesocket(probe);
+		}
+	}
+
 	s_sock = socket(AF_INET, SOCK_STREAM, 0);
-	if ((s_sock == INVALID_SOCKET) || slot > 65536)
+	if ((s_sock == INVALID_SOCKET) || slot > 65535)
 	{
 		Console.WriteLn(Color_Red, "PINE: Cannot open socket! Shutting down...");
 		Deinitialize();
 		return false;
+	}
+
+	// Prevent address reuse so two instances cannot silently share the same port.
+	{
+		BOOL exclusive = TRUE;
+		if (setsockopt(s_sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) == SOCKET_ERROR)
+			Console.WriteLn(Color_Yellow, "PINE: Could not set SO_EXCLUSIVEADDRUSE (error %d); duplicate servers may go undetected.", WSAGetLastError());
 	}
 
 	sockaddr_in server = {};
@@ -333,6 +376,29 @@ bool PINEServer::Initialize(int slot)
 
 	struct sockaddr_un server;
 
+	// Probe whether another process is already listening on this Unix socket.
+	// Only unlink a stale (dead) socket file; refuse to replace a live server.
+	{
+		int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (probe >= 0)
+		{
+			struct sockaddr_un probe_addr;
+			probe_addr.sun_family = AF_UNIX;
+			StringUtil::Strlcpy(probe_addr.sun_path, s_socket_name, sizeof(probe_addr.sun_path));
+			if (connect(probe, reinterpret_cast<struct sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0)
+			{
+				close(probe);
+				Console.WriteLn(Color_Red, "PINE: A server is already listening on %s. Shutting down...", s_socket_name.c_str());
+				s_socket_name = {};
+				s_end.store(true, std::memory_order_release);
+				return false;
+			}
+			close(probe);
+		}
+		// No live server — safe to remove a stale socket file if it exists.
+		unlink(s_socket_name.c_str());
+	}
+
 	s_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (s_sock < 0)
 	{
@@ -343,9 +409,6 @@ bool PINEServer::Initialize(int slot)
 	server.sun_family = AF_UNIX;
 	StringUtil::Strlcpy(server.sun_path, s_socket_name, sizeof(server.sun_path));
 
-	// we unlink the socket so that when releasing this thread the socket gets
-	// freed even if we didn't close correctly the loop
-	unlink(s_socket_name.c_str());
 	if (bind(s_sock, (struct sockaddr*)&server, sizeof(struct sockaddr_un)))
 	{
 		Console.WriteLn(Color_Red, "PINE: Error while binding to socket! Shutting down...");
@@ -768,112 +831,135 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			}
 			case MsgGetProgramCounter:
 			{
-				if (buf_cnt != 1)
-					goto error;
 				if (!VMManager::HasValidVM())
 					goto error;
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 5, buf_size)) [[unlikely]]
 					goto error;
-				ToResultVector(ret_buffer, cpuRegs.pc, ret_cnt);
+
+				u32 pc = 0;
+				u8 paused = 0;
+				Host::RunOnCPUThread([&]() {
+					pc = NormalizePcKseg0(cpuRegs.pc);
+					paused = (VMManager::GetState() == VMState::Paused) ? 1 : 0;
+				}, true);
+
+				ToResultVector(ret_buffer, pc, ret_cnt);
 				ret_cnt += 4;
-				ret_buffer[ret_cnt] = (VMManager::GetState() == VMState::Paused) ? 1 : 0;
-				ret_cnt += 1;
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				ret_buffer[ret_cnt++] = paused;
+				break;
 			}
 			case MsgPause:
 			{
-				if (buf_cnt != 1)
-					goto error;
 				if (!VMManager::HasValidVM())
 					goto error;
-				VMManager::SetPaused(true);
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::SetPaused(true); }, true);
+				break;
 			}
 			case MsgResume:
 			{
-				if (buf_cnt != 1)
-					goto error;
 				if (!VMManager::HasValidVM())
 					goto error;
-				VMManager::SetPaused(false);
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::SetPaused(false); }, true);
+				break;
 			}
 			case MsgStep:
 			{
-				if (buf_cnt != 1)
-					goto error;
-				if (VMManager::GetState() != VMState::Paused)
+				if (!VMManager::HasValidVM())
 					goto error;
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4, buf_size)) [[unlikely]]
 					goto error;
-				Host::RunOnCPUThread([]() { Cpu->Step(); }, true);
-				ToResultVector(ret_buffer, cpuRegs.pc, ret_cnt);
+
+				bool stepped = false;
+				u32 new_pc = 0;
+				Host::RunOnCPUThread([&]() {
+					if (VMManager::GetState() != VMState::Paused)
+						return;
+					intCpu.Step();
+					new_pc = NormalizePcKseg0(cpuRegs.pc);
+					stepped = true;
+				}, true);
+
+				if (!stepped)
+					goto error;
+
+				ToResultVector(ret_buffer, new_pc, ret_cnt);
 				ret_cnt += 4;
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				break;
 			}
 			case MsgSetBreakpoint:
 			{
-				if (buf_cnt != 1)
+				if (!VMManager::HasValidVM())
 					goto error;
 				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
 					goto error;
+
 				const u32 addr = FromSpan<u32>(buf, buf_cnt);
-				{
-					std::lock_guard<std::mutex> lock(s_bp_mutex);
-					if (s_breakpoints.insert(addr).second)
-						CBreakPoints::AddBreakPoint(BREAKPOINT_EE, addr);
-				}
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				Host::RunOnCPUThread([addr]() {
+					CBreakPoints::AddBreakPoint(BREAKPOINT_EE, addr, false, true, false);
+				}, true);
+				buf_cnt += 4;
+				break;
 			}
 			case MsgClearBreakpoint:
 			{
-				if (buf_cnt != 1)
+				if (!VMManager::HasValidVM())
 					goto error;
 				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
 					goto error;
+
 				const u32 addr = FromSpan<u32>(buf, buf_cnt);
-				{
-					std::lock_guard<std::mutex> lock(s_bp_mutex);
-					if (s_breakpoints.erase(addr) == 0)
-						goto error;
-					CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
-				}
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				bool had_bp = false;
+				Host::RunOnCPUThread([addr, &had_bp]() {
+					had_bp = CBreakPoints::IsAddressBreakPoint(BREAKPOINT_EE, addr);
+					if (had_bp)
+						CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
+				}, true);
+				buf_cnt += 4;
+
+				if (!had_bp)
+					goto error;
+
+				break;
 			}
 			case MsgClearAllBreakpoints:
 			{
-				if (buf_cnt != 1)
+				if (!VMManager::HasValidVM())
 					goto error;
-				{
-					std::lock_guard<std::mutex> lock(s_bp_mutex);
-					for (const u32 addr : s_breakpoints)
-						CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
-					s_breakpoints.clear();
-				}
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { CBreakPoints::ClearAllBreakPoints(); }, true);
+				break;
 			}
 			case MsgGetRegisters:
 			{
-				if (buf_cnt != 1)
-					goto error;
 				if (!VMManager::HasValidVM())
 					goto error;
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 140, buf_size)) [[unlikely]]
 					goto error;
-				for (int i = 0; i < 32; i++)
-				{
-					ToResultVector(ret_buffer, cpuRegs.GPR.r[i].UL[0], ret_cnt);
+
+				Host::RunOnCPUThread([&]() {
+					for (int i = 0; i < 32; i++)
+					{
+						ToResultVector(ret_buffer, cpuRegs.GPR.r[i].UL[0], ret_cnt);
+						ret_cnt += 4;
+					}
+					ToResultVector(ret_buffer, NormalizePcKseg0(cpuRegs.pc), ret_cnt);
 					ret_cnt += 4;
-				}
-				ToResultVector(ret_buffer, cpuRegs.pc, ret_cnt);
-				ret_cnt += 4;
-				ToResultVector(ret_buffer, cpuRegs.HI.UL[0], ret_cnt);
-				ret_cnt += 4;
-				ToResultVector(ret_buffer, cpuRegs.LO.UL[0], ret_cnt);
-				ret_cnt += 4;
-				return IPCBuffer{(int)ret_cnt, MakeOkIPC(ret_buffer, ret_cnt)};
-			}
-			default:
+					ToResultVector(ret_buffer, cpuRegs.HI.UL[0], ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, cpuRegs.LO.UL[0], ret_cnt);
+					ret_cnt += 4;
+				}, true);
+
+				break;
+			}			default:
 			{
 			error:
 				return IPCBuffer{5, MakeFailIPC(ret_buffer)};
