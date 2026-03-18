@@ -17,9 +17,11 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <span>
 #include <sys/types.h>
 #include <thread>
+#include <unordered_set>
 
 #include "fmt/format.h"
 
@@ -136,6 +138,13 @@ namespace PINEServer
 	 * A preallocated buffer used to store all IPC messages.
 	 */
 	static std::vector<u8> s_ipc_buffer;
+
+	/**
+	 * Set of EE PC addresses registered as PINE breakpoints.
+	 * Guarded by s_bp_mutex.
+	 */
+	static std::unordered_set<u32> s_breakpoints;
+	static std::mutex s_bp_mutex;
 
 	/**
 	 * IPC Command messages opcodes.
