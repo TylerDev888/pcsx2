@@ -190,6 +190,18 @@ namespace PINEServer
 		MsgStepOver            = 0x1F, /**< Step over function calls (non-blocking). */
 		MsgStepOut             = 0x20, /**< Step out of current function (non-blocking). */
 		MsgGetSymbol           = 0x21, /**< Look up EE function symbol by address. */
+		MsgSaveStateFile       = 0x22, /**< Save state to a named file path. */
+		MsgLoadStateFile       = 0x23, /**< Load state from a named file path. */
+		MsgReset               = 0x24, /**< Cold-boot reset. */
+		MsgFrameAdvance        = 0x25, /**< Advance N video frames then pause. */
+		MsgGetFPS              = 0x26, /**< Current emulated framerate as f32. */
+		MsgSetLimiterMode      = 0x27, /**< Set speed limiter mode (0=Nominal, 1=Turbo, 2=Slomo, 3=Unlimited). */
+		MsgListBreakpoints     = 0x28, /**< List all active EE and/or IOP breakpoints. */
+		MsgDisassemble         = 0x29, /**< Disassemble N instructions at an address. */
+		MsgListFunctions       = 0x2A, /**< Paginated list of EE function symbols. */
+		MsgGetSymbolByName     = 0x2B, /**< Look up any EE symbol by name → address. */
+		MsgListGlobals         = 0x2C, /**< Paginated list of EE global variables. */
+		MsgGetLocals           = 0x2D, /**< List locals/params for the function containing an EE address. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -603,6 +615,20 @@ void PINEServer::Deinitialize()
 
 PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8>& ret_buffer, u32 buf_size)
 {
+	// Buffer-size constants for new opcodes
+	// Breakpoints: addr(4) + enabled(1) + cpu(1) = 6 bytes each
+	static constexpr int MAX_BREAKPOINTS_RESPONSE = 10000;
+	static constexpr int BREAKPOINT_ENTRY_SIZE    = 6;
+	// Disassembly: addr(4) + len(1) + text(255 max) = 260 bytes each
+	static constexpr int MAX_DISASSEMBLY_LINES     = 1000;
+	static constexpr int MAX_DISASSEMBLY_LINE_SIZE = 4 + 1 + 255;
+	// Symbol listing: addr(4) + size(4) + name_len(1) + name(255 max) = 264 bytes each
+	static constexpr int MAX_SYMBOL_BATCH          = 3000;
+	static constexpr int MAX_SYMBOL_ENTRY_SIZE     = 4 + 4 + 1 + 255;
+	// Locals: storage_type(1) + value(4) + name_len(1) + name(255 max) = 261 bytes each
+	static constexpr int MAX_LOCALS_RESPONSE       = 512;
+	static constexpr int MAX_LOCAL_ENTRY_SIZE      = 1 + 4 + 1 + 255;
+
 	u32 ret_cnt = 5;
 	u32 buf_cnt = 0;
 
@@ -1244,6 +1270,393 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				memcpy(&ret_buffer[ret_cnt], info.name.c_str(), name_len);
 				ret_cnt += name_len;
 				buf_cnt += 4;
+				break;
+			}
+			case MsgSaveStateFile:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u16 path_len = FromSpan<u16>(buf, buf_cnt);
+				if (path_len == 0 || path_len > 512)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2 + path_len, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				std::string path(reinterpret_cast<const char*>(&buf[buf_cnt + 2]), path_len);
+				buf_cnt += 2 + path_len;
+				Host::RunOnCPUThread([path = std::move(path)]() {
+					VMManager::SaveState(path.c_str(), true, false,
+						[](const std::string&) {});
+				});
+				break;
+			}
+			case MsgLoadStateFile:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u16 path_len = FromSpan<u16>(buf, buf_cnt);
+				if (path_len == 0 || path_len > 512)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2 + path_len, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				std::string path(reinterpret_cast<const char*>(&buf[buf_cnt + 2]), path_len);
+				buf_cnt += 2 + path_len;
+				bool ok = false;
+				Host::RunOnCPUThread([&ok, path = std::move(path)]() {
+					Error err;
+					ok = VMManager::LoadState(path.c_str(), &err);
+				}, true);
+				if (!ok)
+					goto error;
+				break;
+			}
+			case MsgReset:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::Reset(); });
+				break;
+			}
+			case MsgFrameAdvance:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 num_frames = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (num_frames == 0)
+					goto error;
+
+				Host::RunOnCPUThread([num_frames]() { VMManager::FrameAdvance(num_frames); });
+				break;
+			}
+			case MsgGetFPS:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4, buf_size)) [[unlikely]]
+					goto error;
+
+				const float fps = VMManager::GetFrameRate();
+				ToResultVector(ret_buffer, fps, ret_cnt);
+				ret_cnt += 4;
+				break;
+			}
+			case MsgSetLimiterMode:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 mode = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (mode > static_cast<u8>(LimiterModeType::Unlimited))
+					goto error;
+
+				VMManager::SetLimiterMode(static_cast<LimiterModeType>(mode));
+				break;
+			}
+			case MsgListBreakpoints:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 4 + MAX_BREAKPOINTS_RESPONSE * BREAKPOINT_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+
+				std::vector<BreakPoint> bps;
+				Host::RunOnCPUThread([&]() {
+					if (cpu_sel == 0 || cpu_sel == 0xFF)
+					{
+						auto ee = CBreakPoints::GetBreakpoints(BREAKPOINT_EE, false);
+						bps.insert(bps.end(), ee.begin(), ee.end());
+					}
+					if (cpu_sel == 1 || cpu_sel == 0xFF)
+					{
+						auto iop = CBreakPoints::GetBreakpoints(BREAKPOINT_IOP, false);
+						bps.insert(bps.end(), iop.begin(), iop.end());
+					}
+				}, true);
+
+				const u32 count = static_cast<u32>(bps.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& bp : bps)
+				{
+					ToResultVector(ret_buffer, bp.addr, ret_cnt);    ret_cnt += 4;
+					ret_buffer[ret_cnt++] = bp.enabled ? 1 : 0;
+					ret_buffer[ret_cnt++] = static_cast<u8>(bp.cpu);
+				}
+				break;
+			}
+			case MsgDisassemble:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				// cpu(1) + addr(4) + count(2) = 7; reply up to MAX_DISASSEMBLY_LINES × MAX_DISASSEMBLY_LINE_SIZE
+				if (!SafetyChecks(buf_cnt, 7, ret_cnt, 2 + MAX_DISASSEMBLY_LINES * MAX_DISASSEMBLY_LINE_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8  cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				const u32 addr    = FromSpan<u32>(buf, buf_cnt + 1);
+				const u16 count   = std::min<u16>(FromSpan<u16>(buf, buf_cnt + 5), MAX_DISASSEMBLY_LINES);
+				buf_cnt += 7;
+
+				DebugInterface& dbg = (cpu_sel == 0) ? static_cast<DebugInterface&>(r5900Debug)
+				                                     : static_cast<DebugInterface&>(r3000Debug);
+
+				std::vector<std::pair<u32, std::string>> lines;
+				lines.reserve(count);
+				Host::RunOnCPUThread([&]() {
+					u32 cur = addr;
+					for (u16 i = 0; i < count; ++i)
+					{
+						std::string text = dbg.disasm(cur, true);
+						lines.emplace_back(cur, std::move(text));
+						cur += 4;
+					}
+				}, true);
+
+				const u16 returned = static_cast<u16>(lines.size());
+				ToResultVector(ret_buffer, returned, ret_cnt);
+				ret_cnt += 2;
+				for (const auto& [line_addr, text] : lines)
+				{
+					ToResultVector(ret_buffer, line_addr, ret_cnt); ret_cnt += 4;
+					const u8 text_len = static_cast<u8>(std::min(text.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = text_len;
+					memcpy(&ret_buffer[ret_cnt], text.c_str(), text_len);
+					ret_cnt += text_len;
+				}
+				break;
+			}
+			case MsgListFunctions:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 6, ret_cnt, 4 + 2 + MAX_SYMBOL_BATCH * MAX_SYMBOL_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 offset    = FromSpan<u32>(buf, buf_cnt);
+				const u16 max_count = FromSpan<u16>(buf, buf_cnt + 4);
+				buf_cnt += 6;
+
+				u32 total = 0;
+				std::vector<std::tuple<u32, u32, std::string>> funcs; // addr, size, name
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					total = static_cast<u32>(db.functions.size());
+					u32 idx = 0;
+					for (const ccc::Function& f : db.functions)
+					{
+						if (idx++ < offset)
+							continue;
+						if (funcs.size() >= max_count)
+							break;
+						funcs.emplace_back(f.address().get_or_zero(), f.size(), f.name());
+					}
+				});
+
+				ToResultVector(ret_buffer, total, ret_cnt);
+				ret_cnt += 4;
+				const u16 returned = static_cast<u16>(funcs.size());
+				ToResultVector(ret_buffer, returned, ret_cnt);
+				ret_cnt += 2;
+				for (const auto& [faddr, fsize, fname] : funcs)
+				{
+					ToResultVector(ret_buffer, faddr, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, fsize, ret_cnt); ret_cnt += 4;
+					const u8 name_len = static_cast<u8>(std::min(fname.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = name_len;
+					memcpy(&ret_buffer[ret_cnt], fname.c_str(), name_len);
+					ret_cnt += name_len;
+				}
+				break;
+			}
+			case MsgGetSymbolByName:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 4 + 4, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 name_len = FromSpan<u8>(buf, buf_cnt);
+				if (name_len == 0)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + name_len, ret_cnt, 4 + 4, buf_size)) [[unlikely]]
+					goto error;
+
+				const std::string sym_name(reinterpret_cast<const char*>(&buf[buf_cnt + 1]), name_len);
+				buf_cnt += 1 + name_len;
+
+				u32 found_addr = 0;
+				u32 found_size = 0;
+				bool found = false;
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					const ccc::Symbol* sym = db.symbol_with_name(sym_name);
+					if (sym && sym->address().valid())
+					{
+						found      = true;
+						found_addr = sym->address().value;
+						found_size = sym->size();
+					}
+				});
+				if (!found)
+					goto error;
+
+				ToResultVector(ret_buffer, found_addr, ret_cnt); ret_cnt += 4;
+				ToResultVector(ret_buffer, found_size, ret_cnt); ret_cnt += 4;
+				break;
+			}
+			case MsgListGlobals:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 6, ret_cnt, 4 + 2 + MAX_SYMBOL_BATCH * MAX_SYMBOL_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 offset    = FromSpan<u32>(buf, buf_cnt);
+				const u16 max_count = FromSpan<u16>(buf, buf_cnt + 4);
+				buf_cnt += 6;
+
+				u32 total = 0;
+				std::vector<std::tuple<u32, u32, std::string>> globs; // addr, size, name
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					total = static_cast<u32>(db.global_variables.size());
+					u32 idx = 0;
+					for (const ccc::GlobalVariable& gv : db.global_variables)
+					{
+						if (idx++ < offset)
+							continue;
+						if (globs.size() >= max_count)
+							break;
+						globs.emplace_back(gv.address().get_or_zero(), gv.size(), gv.name());
+					}
+				});
+
+				ToResultVector(ret_buffer, total, ret_cnt);
+				ret_cnt += 4;
+				const u16 returned = static_cast<u16>(globs.size());
+				ToResultVector(ret_buffer, returned, ret_cnt);
+				ret_cnt += 2;
+				for (const auto& [gaddr, gsize, gname] : globs)
+				{
+					ToResultVector(ret_buffer, gaddr, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, gsize, ret_cnt); ret_cnt += 4;
+					const u8 name_len = static_cast<u8>(std::min(gname.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = name_len;
+					memcpy(&ret_buffer[ret_cnt], gname.c_str(), name_len);
+					ret_cnt += name_len;
+				}
+				break;
+			}
+			case MsgGetLocals:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 4 + MAX_LOCALS_RESPONSE * MAX_LOCAL_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 query_addr = FromSpan<u32>(buf, buf_cnt);
+				buf_cnt += 4;
+
+				struct LocalEntry { u8 storage_type; s32 value; std::string name; };
+				std::vector<LocalEntry> locals;
+
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					const ccc::Function* func = db.functions.symbol_overlapping_address(query_addr);
+					if (!func)
+						return;
+
+					// Collect parameter variables
+					if (func->parameter_variables().has_value())
+					{
+						for (const auto& pv_handle : *func->parameter_variables())
+						{
+							const ccc::ParameterVariable* pv = db.parameter_variables.symbol_from_handle(pv_handle);
+							if (!pv)
+								continue;
+							LocalEntry e;
+							e.name = pv->name();
+							std::visit([&e](const auto& s) {
+								using T = std::decay_t<decltype(s)>;
+								if constexpr (std::is_same_v<T, ccc::RegisterStorage>)
+								{
+									e.storage_type = 1;
+									e.value = static_cast<s32>(s.dbx_register_number);
+								}
+								else if constexpr (std::is_same_v<T, ccc::StackStorage>)
+								{
+									e.storage_type = 2;
+									e.value = s.stack_pointer_offset;
+								}
+							}, pv->storage);
+							locals.push_back(std::move(e));
+						}
+					}
+
+					// Collect local variables
+					if (func->local_variables().has_value())
+					{
+						for (const auto& lv_handle : *func->local_variables())
+						{
+							const ccc::LocalVariable* lv = db.local_variables.symbol_from_handle(lv_handle);
+							if (!lv)
+								continue;
+							LocalEntry e;
+							e.name = lv->name();
+							std::visit([&e](const auto& s) {
+								using T = std::decay_t<decltype(s)>;
+								if constexpr (std::is_same_v<T, ccc::GlobalStorage>)
+								{
+									e.storage_type = 0;
+									e.value = 0;
+								}
+								else if constexpr (std::is_same_v<T, ccc::RegisterStorage>)
+								{
+									e.storage_type = 1;
+									e.value = static_cast<s32>(s.dbx_register_number);
+								}
+								else if constexpr (std::is_same_v<T, ccc::StackStorage>)
+								{
+									e.storage_type = 2;
+									e.value = s.stack_pointer_offset;
+								}
+							}, lv->storage);
+							locals.push_back(std::move(e));
+						}
+					}
+				});
+
+				if (locals.empty())
+					goto error;
+
+				const u32 count = static_cast<u32>(locals.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& loc : locals)
+				{
+					ret_buffer[ret_cnt++] = loc.storage_type;
+					ToResultVector(ret_buffer, loc.value, ret_cnt); ret_cnt += 4;
+					const u8 name_len = static_cast<u8>(std::min(loc.name.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = name_len;
+					memcpy(&ret_buffer[ret_cnt], loc.name.c_str(), name_len);
+					ret_cnt += name_len;
+				}
 				break;
 			}
 			default:

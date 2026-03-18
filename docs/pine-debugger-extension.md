@@ -2,13 +2,12 @@
 
 ## Summary
 
-This proposal extends the PINE IPC protocol with opcodes 0x10–0x21 that expose full
-EE and IOP CPU debugger state to external tools. The additions allow a remote client
-to pause and resume emulation, single-step or high-level step (into/over/out) the EE
-CPU, manage PC breakpoints, inspect all registers across all categories on both CPUs,
-enumerate running threads and loaded IOP modules, walk the call stack, and look up
-function symbols — all through the existing PINE socket without any separate
-out-of-band channel.
+This proposal extends the PINE IPC protocol with opcodes 0x10–0x2D that expose the
+complete PCSX2 GUI debugger interface to external tools. The additions allow a remote
+client to control execution, manage save states by name, inspect all registers across
+both CPUs, enumerate threads, modules, and call stacks, list and look up EE function
+symbols and global variables, retrieve local variables and function parameters, and
+disassemble instruction ranges — all through the existing PINE socket.
 
 All new opcodes are numbered above 0x0F, so no existing opcode values change and
 clients that do not use the new opcodes are completely unaffected.
@@ -64,6 +63,33 @@ opcodes makes PINE a self-contained debugger transport.
 | 0x1F  | `MsgStepOver`   | Set temp breakpoint past function calls and resume   |
 | 0x20  | `MsgStepOut`    | Walk stack, set temp breakpoint at caller, resume    |
 | 0x21  | `MsgGetSymbol`  | Look up EE function symbol name by address           |
+
+### Save-state and emulator control (0x22–0x27)
+
+| Value | Name                | Purpose                                                    |
+|-------|---------------------|------------------------------------------------------------|
+| 0x22  | `MsgSaveStateFile`  | Save state to a named file path (async)                    |
+| 0x23  | `MsgLoadStateFile`  | Load state from a named file path                          |
+| 0x24  | `MsgReset`          | Cold-boot reset                                            |
+| 0x25  | `MsgFrameAdvance`   | Advance N video frames then pause                          |
+| 0x26  | `MsgGetFPS`         | Current emulated framerate as `f32`                        |
+| 0x27  | `MsgSetLimiterMode` | Set speed limiter (0=Nominal, 1=Turbo, 2=Slomo, 3=Unlimited) |
+
+### Breakpoint inspection and disassembly (0x28–0x29)
+
+| Value | Name                  | Purpose                                                    |
+|-------|-----------------------|------------------------------------------------------------|
+| 0x28  | `MsgListBreakpoints`  | List active EE and/or IOP PC breakpoints                   |
+| 0x29  | `MsgDisassemble`      | Disassemble N instructions at an address on EE or IOP      |
+
+### Symbol database queries (0x2A–0x2D)
+
+| Value | Name                | Purpose                                                    |
+|-------|---------------------|------------------------------------------------------------|
+| 0x2A  | `MsgListFunctions`  | Paginated list of EE function symbols (address, size, name)|
+| 0x2B  | `MsgGetSymbolByName`| Look up any EE symbol by name → address and size           |
+| 0x2C  | `MsgListGlobals`    | Paginated list of EE global variables                      |
+| 0x2D  | `MsgGetLocals`      | List locals and parameters for the function at an address  |
 
 ---
 
@@ -269,11 +295,162 @@ Looks up the EE function symbol whose range includes the given address.
 - **Reply (fail):** 5 bytes — `IPC_FAIL` when no symbol overlaps the address or no
   valid VM is active.
 
+### MsgSaveStateFile (0x22)
+
+Saves the current emulator state to a file at an arbitrary path. The save is performed
+asynchronously (fire-and-forget) so `IPC_OK` is returned before the file is written.
+
+- **Request:** variable — opcode, `path_len` (u16LE, 1–512), then `path_len` bytes of
+  UTF-8 path.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if `path_len` is 0 or > 512, or if no valid
+  VM is active.
+
+### MsgLoadStateFile (0x23)
+
+Loads a state from an arbitrary file path. Blocks until the load completes.
+
+- **Request:** variable — opcode, `path_len` (u16LE, 1–512), then `path_len` bytes of
+  UTF-8 path.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` on I/O error or version mismatch.
+
+### MsgReset (0x24)
+
+Triggers a cold-boot reset of the emulated PS2 (equivalent to pressing the RESET
+button on the console).
+
+- **Request:** 5 bytes — opcode only.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` when no valid VM is active.
+
+### MsgFrameAdvance (0x25)
+
+Advances the emulation by exactly N video frames and then pauses. Useful for
+frame-by-frame analysis without maintaining a dedicated step loop.
+
+- **Request:** 6 bytes — opcode, `num_frames` (u8, 1–255).
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if `num_frames` is 0 or no valid VM.
+
+### MsgGetFPS (0x26)
+
+Returns the current emulated frame rate.
+
+- **Request:** 5 bytes — opcode only.
+- **Reply (OK):** 9 bytes — `IPC_OK`, then current FPS as a 32-bit little-endian float.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` when no valid VM is active.
+
+### MsgSetLimiterMode (0x27)
+
+Changes the speed limiter.
+
+- **Request:** 6 bytes — opcode, `mode` (u8): 0 = Nominal (full speed), 1 = Turbo,
+  2 = Slomo, 3 = Unlimited.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` for unknown `mode` or no valid VM.
+
+### MsgListBreakpoints (0x28)
+
+Returns all active PC breakpoints on EE, IOP, or both.
+
+- **Request:** 6 bytes — opcode, `cpu` (u8): 0 = EE only, 1 = IOP only, 0xFF = both.
+- **Reply (OK):** variable — `IPC_OK`, `count` (u32LE), then for each breakpoint:
+
+  ```
+  addr    : u32LE
+  enabled : u8   (1 = enabled, 0 = disabled)
+  cpu     : u8   (0x01 = EE, 0x02 = IOP)
+  ```
+
+  6 bytes per breakpoint; up to 10 000 breakpoints.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` when no valid VM is active.
+
+### MsgDisassemble (0x29)
+
+Disassembles up to 1 000 instructions starting at a given address on EE or IOP.
+
+- **Request:** 12 bytes — opcode, `cpu` (u8: 0=EE, 1=IOP), `address` (u32LE),
+  `count` (u16LE, clamped to 1 000).
+- **Reply (OK):** variable — `IPC_OK`, `returned` (u16LE), then for each instruction:
+
+  ```
+  addr     : u32LE
+  text_len : u8      (number of bytes in the following text, max 255)
+  text     : bytes   (UTF-8 disassembly string, not NUL-terminated)
+  ```
+
+- **Reply (fail):** 5 bytes — `IPC_FAIL` when no valid VM is active.
+
+### MsgListFunctions (0x2A)
+
+Returns a paginated slice of all EE function symbols loaded in the symbol database.
+
+- **Request:** 11 bytes — opcode, `offset` (u32LE, 0-based index into the full list),
+  `max_count` (u16LE, maximum entries to return in one reply).
+- **Reply (OK):** variable — `IPC_OK`, `total` (u32LE, total function count),
+  `returned` (u16LE), then for each function:
+
+  ```
+  address  : u32LE
+  size     : u32LE   (bytes)
+  name_len : u8      (max 255)
+  name     : bytes   (demangled UTF-8 name, not NUL-terminated)
+  ```
+
+- **Reply (fail):** 5 bytes — `IPC_FAIL` when no valid VM is active.
+
+### MsgGetSymbolByName (0x2B)
+
+Looks up any symbol in the EE symbol database by its demangled name.
+
+- **Request:** variable — opcode, `name_len` (u8, 1–255), then `name_len` bytes of
+  UTF-8 symbol name.
+- **Reply (OK):** 13 bytes — `IPC_OK`, `address` (u32LE), `size` (u32LE).
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no symbol with that name exists.
+
+### MsgListGlobals (0x2C)
+
+Returns a paginated slice of all EE global variables from the symbol database.
+Same encoding as `MsgListFunctions`.
+
+- **Request:** 11 bytes — opcode, `offset` (u32LE), `max_count` (u16LE).
+- **Reply (OK):** variable — `IPC_OK`, `total` (u32LE), `returned` (u16LE), then for
+  each global:
+
+  ```
+  address  : u32LE
+  size     : u32LE
+  name_len : u8
+  name     : bytes
+  ```
+
+- **Reply (fail):** 5 bytes — `IPC_FAIL`.
+
+### MsgGetLocals (0x2D)
+
+Finds the EE function whose address range contains the given address and returns
+all of its parameters and local variables with their storage locations.
+
+- **Request:** 9 bytes — opcode, `address` (u32LE).
+- **Reply (OK):** variable — `IPC_OK`, `count` (u32LE), then for each variable:
+
+  ```
+  storage_type : u8    (0 = global address, 1 = register number, 2 = stack offset)
+  value        : s32LE (address / register index / SP-relative byte offset)
+  name_len     : u8
+  name         : bytes (UTF-8, not NUL-terminated)
+  ```
+
+  Parameters are listed first, then local variables.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no function contains the address, the
+  function has no debug information, or no valid VM is active.
+
 ---
 
 ## Batch Mode
 
-All opcodes 0x10–0x21 are **single-command only** — they must not appear inside a
+All opcodes 0x10–0x2D are **single-command only** — they must not appear inside a
 multi-command batch request. If any of them is encountered after another command
 has already been processed in the same request buffer, the server returns `IPC_FAIL`
 for the entire batch. This restriction exists because these opcodes mutate or observe
@@ -321,4 +498,18 @@ current PC.
 - [ ] `MsgStepOut` resumes and pauses at the return site of the current function
 - [ ] `MsgGetSymbol` returns name and start address for a known function address
 - [ ] `MsgGetSymbol` returns `IPC_FAIL` for an address with no symbol
-- [ ] All opcodes 0x10–0x21 return `IPC_FAIL` gracefully when called inside a batch
+- [ ] `MsgSaveStateFile` + `MsgLoadStateFile` round-trip through a named `.p2s` file
+- [ ] `MsgReset` restarts the game from boot
+- [ ] `MsgFrameAdvance(1)` advances exactly one frame
+- [ ] `MsgGetFPS` returns a plausible value (e.g., near 60 for NTSC games)
+- [ ] `MsgSetLimiterMode(1)` enables turbo; `MsgSetLimiterMode(0)` restores normal speed
+- [ ] `MsgListBreakpoints(0xFF)` returns all active breakpoints across both CPUs
+- [ ] `MsgDisassemble(0, pc, 4)` returns 4 instruction lines starting at EE PC
+- [ ] `MsgListFunctions` with `offset=0, max_count=100` returns up to 100 entries
+- [ ] `MsgListFunctions` `total` matches the count returned by repeated pages
+- [ ] `MsgGetSymbolByName` resolves a known function name to the correct address
+- [ ] `MsgGetSymbolByName` returns `IPC_FAIL` for an unknown name
+- [ ] `MsgListGlobals` returns global variable names, addresses, and sizes
+- [ ] `MsgGetLocals` returns parameters and locals for a function with DWARF debug info
+- [ ] `MsgGetLocals` returns `IPC_FAIL` for an address outside any function
+- [ ] All opcodes 0x10–0x2D return `IPC_FAIL` gracefully when called inside a batch
