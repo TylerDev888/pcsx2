@@ -1039,6 +1039,8 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			{
 				if (!VMManager::HasValidVM())
 					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
 				// count(4) + up to 256 threads × 22 bytes each
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 256 * 22, buf_size)) [[unlikely]]
 					goto error;
@@ -1065,6 +1067,8 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			{
 				if (!VMManager::HasValidVM())
 					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
 				// count(4) + up to 1000 threads × 22 bytes each
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1000 * 22, buf_size)) [[unlikely]]
 					goto error;
@@ -1090,6 +1094,8 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			case MsgGetModules:
 			{
 				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
 					goto error;
 				// count(4) + up to 1000 modules × 58 bytes each
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1000 * 58, buf_size)) [[unlikely]]
@@ -1121,6 +1127,8 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			case MsgGetStack:
 			{
 				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
 					goto error;
 				// count(4) + up to MAX_DEPTH × 16 bytes per frame
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1024 * 16, buf_size)) [[unlikely]]
