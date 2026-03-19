@@ -623,7 +623,8 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 	static constexpr int MAX_DISASSEMBLY_LINES     = 1000;
 	static constexpr int MAX_DISASSEMBLY_LINE_SIZE = 4 + 1 + 255;
 	// Symbol listing: addr(4) + size(4) + name_len(1) + name(255 max) = 264 bytes each
-	static constexpr int MAX_SYMBOL_BATCH          = 3000;
+	// Max batch is bounded so that (ret_cnt_initial + header + batch*entry) < MAX_IPC_RETURN_SIZE (450000)
+	static constexpr int MAX_SYMBOL_BATCH          = 1500;
 	static constexpr int MAX_SYMBOL_ENTRY_SIZE     = 4 + 4 + 1 + 255;
 	// Locals: storage_type(1) + value(4) + name_len(1) + name(255 max) = 261 bytes each
 	static constexpr int MAX_LOCALS_RESPONSE       = 512;
