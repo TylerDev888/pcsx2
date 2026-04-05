@@ -266,6 +266,7 @@ private:
 	void RenderBlankFrame();
 
 	void OMAttachRt(GSTexture* rt = nullptr);
+	void OMAttachDsAsRt(GSTexture* ds_as_rt = nullptr);
 	void OMAttachDs(GSTexture* ds = nullptr);
 	void OMSetFBO(GLuint fbo);
 
@@ -278,6 +279,7 @@ protected:
 public:
 	GSDeviceOGL();
 	virtual ~GSDeviceOGL();
+	static std::vector<GSAdapterInfo> GetAdapterInfo();
 
 	__fi static GSDeviceOGL* GetInstance() { return static_cast<GSDeviceOGL*>(g_gs_device.get()); }
 
@@ -338,8 +340,9 @@ public:
 	void DoMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, const GSVector2& ds);
 
 	void RenderHW(GSHWDrawConfig& config) override;
-	void SendHWDraw(const GSHWDrawConfig& config, bool one_barrier, bool full_barrier);
-
+	void SendHWDraw(const GSHWDrawConfig& config,
+		GSTexture* draw_rt_clone, GSTexture* draw_rt, GSTexture* draw_ds_clone, GSTexture* draw_ds,
+		const bool one_barrier, const bool full_barrier);
 	void SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSVector4i& bbox);
 
 	void IASetVAO(GLuint vao);
@@ -354,7 +357,7 @@ public:
 	void OMSetDepthStencilState(GSDepthStencilOGL* dss);
 	void OMSetBlendState(bool enable = false, GLenum src_factor = GL_ONE, GLenum dst_factor = GL_ZERO, GLenum op = GL_FUNC_ADD,
 		GLenum src_factor_alpha = GL_ONE, GLenum dst_factor_alpha = GL_ZERO, bool is_constant = false, u8 constant = 0);
-	void OMSetRenderTargets(GSTexture* rt, GSTexture* ds, const GSVector4i* scissor = nullptr);
+	void OMSetRenderTargets(GSTexture* rt, GSTexture* ds_as_rt, GSTexture* ds, const GSVector4i* scissor = nullptr);
 	void OMSetColorMaskState(OMColorMaskSelector sel = OMColorMaskSelector());
 	void OMUnbindTexture(GSTextureOGL* tex);
 

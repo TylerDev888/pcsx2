@@ -469,6 +469,14 @@ enum class GSNativeScaling : u8
 	MaxCount
 };
 
+enum class GSDepthFeedbackMode : u8
+{
+	None      = 0,
+	Auto      = 1,
+	Depth     = 2,
+	DepthAsRT = 3,
+};
+
 enum class AchievementOverlayPosition : u8
 {
 	TopLeft,
@@ -720,6 +728,7 @@ struct Pcsx2Config
 		static constexpr TriFiltering DEFAULT_TRILINEAR_FILTERING_MODE = TriFiltering::Automatic;
 
 		static constexpr float DEFAULT_OSD_SCALE = 100.0f;
+		static constexpr float DEFAULT_OSD_MARGIN = 10.0f;
 		static constexpr OsdOverlayPos DEFAULT_OSD_MESSAGE_POS = OsdOverlayPos::TopLeft;
 		static constexpr OsdOverlayPos DEFAULT_OSD_PERFORMANCE_POS = OsdOverlayPos::TopRight;
 
@@ -763,6 +772,7 @@ struct Pcsx2Config
 					OsdShowGSStats : 1,
 					OsdShowCPU : 1,
 					OsdShowGPU : 1,
+					OsdShowGPUDebug : 1,
 					OsdShowIndicators : 1,
 					OsdShowFrameTimes : 1,
 					OsdShowHardwareInfo : 1,
@@ -773,6 +783,7 @@ struct Pcsx2Config
 					OsdShowVideoCapture : 1,
 					OsdShowInputRec : 1,
 					OsdShowTextureReplacements : 1,
+					OsdBoldText : 1,
 					HWSpinGPUForReadbacks : 1,
 					HWSpinCPUForReadbacks : 1,
 					GPUPaletteConversion : 1,
@@ -780,6 +791,7 @@ struct Pcsx2Config
 					PreloadFrameWithGSData : 1,
 					Mipmap : 1,
 					HWMipmap : 1,
+					HWAccurateAlphaTest: 1,
 					ManualUserHacks : 1,
 					UserHacks_AlignSpriteX : 1,
 					UserHacks_CPUFBConversion : 1,
@@ -818,7 +830,8 @@ struct Pcsx2Config
 					VideoCaptureAutoResolution : 1,
 					EnableAudioCapture : 1,
 					EnableAudioCaptureParameters : 1,
-					OrganizeSnapshotsByGame : 1;
+					OrganizeSnapshotsByGame : 1,
+					OrganizeVideoCaptureByGame : 1;
 			};
 		};
 
@@ -836,6 +849,8 @@ struct Pcsx2Config
 		int Crop[4] = {};
 
 		float OsdScale = DEFAULT_OSD_SCALE;
+		float OsdMargin = DEFAULT_OSD_MARGIN;
+		std::string OsdFontPath;
 		OsdOverlayPos OsdMessagesPos = DEFAULT_OSD_MESSAGE_POS;
 		OsdOverlayPos OsdPerformancePos = DEFAULT_OSD_PERFORMANCE_POS;
 
@@ -872,6 +887,7 @@ struct Pcsx2Config
 		GSBilinearDirtyMode UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 		TriFiltering TriFilter = DEFAULT_TRILINEAR_FILTERING_MODE;
 		s8 OverrideTextureBarriers = -1;
+		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
 
 		u8 CAS_Sharpness = 50;
 		u8 ShadeBoost_Brightness = DEFAULT_SHADEBOOST_BRIGHTNESS;

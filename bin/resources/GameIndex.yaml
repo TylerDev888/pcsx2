@@ -1623,6 +1623,8 @@ SCAJ-20058:
 SCAJ-20059:
   name: "Minna no Golf 4"
   region: "NTSC-Unk"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCAJ-20060:
   name: "Time Crisis 3"
   region: "NTSC-Unk"
@@ -1717,6 +1719,8 @@ SCAJ-20074:
   name: "The King of Fighters 2002"
   name-sort: "King of Fighters 2002, The"
   region: "NTSC-Unk"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SCAJ-20075:
   name: "Dragon Quest V - Bride of the Sky"
   region: "NTSC-Unk"
@@ -1846,6 +1850,8 @@ SCAJ-20093:
 SCAJ-20094:
   name: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-Unk"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCAJ-20095:
   name: "Digital Devil Saga - Avatar Tuner"
   region: "NTSC-Unk"
@@ -2523,6 +2529,8 @@ SCAJ-20193:
 SCAJ-20194:
   name: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-Unk"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCAJ-20195:
   name: "Ape Escape 3 [PlayStation2 the Best]"
   region: "NTSC-C"
@@ -5842,8 +5850,10 @@ SCES-52566:
   name: "SingStar"
   region: "PAL-I"
 SCES-52582:
-  name: "Everybody's Golf"
+  name: "Everybody's Golf 4"
   region: "PAL-M5"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCES-52586:
   name: "Death by Degrees"
   region: "PAL-E-S"
@@ -7630,6 +7640,8 @@ SCKA-20057:
   name: "모두의 골프 4"
   name-en: "Everybody's Golf 4"
   region: "NTSC-K"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCKA-20058:
   name: "액션 로망 범피 트롯"
   name-en: "Action Romance Bumpy Trot"
@@ -7960,6 +7972,8 @@ SCKA-20096:
   name: "반야드"
   name-en: "Nickelodeon Barnyard"
   region: "NTSC-K"
+  speedHacks:
+    instantVU1: 0 # Significantly improves game speed.
   gsHWFixes:
     halfPixelOffset: 2 # Fix text and post blur.
     autoFlush: 2 # Needed for recursive mipmap rendering.
@@ -9122,6 +9136,8 @@ SCPS-15059:
   name-sort: "みんなのごるふ 4"
   name-en: "Minna no Golf 4"
   region: "NTSC-J"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCPS-15060:
   name: "幸福操作官"
   name-sort: "こうふくそうさかん"
@@ -10025,6 +10041,8 @@ SCPS-19301:
   name-sort: "みんなのごるふ4 [PlayStation2 the Best]"
   name-en: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-J"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCPS-19302:
   name: "ラチェット&クランク2 ガガガ！銀河のコマンドーっす [PlayStation2 the Best]"
   name-sort: "らちぇっとあんどくらんく2 ががが！ぎんがのこまんどーっす [PlayStation2 the Best]"
@@ -10211,6 +10229,8 @@ SCPS-19319:
   name-sort: "みんなのごるふ 4 [PlayStation2 the Best]"
   name-en: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-J"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCPS-19320:
   name: "ワンダと巨像 [PlayStation2 the Best]"
   name-sort: "わんだときょぞう [PlayStation2 the Best]"
@@ -10580,6 +10600,7 @@ SCPS-55015:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SCPS-55016:
   name: "ジェットでGO！2"
   name-sort: "じぇっとでGO！2"
@@ -10934,6 +10955,7 @@ SCPS-56012:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SCPS-56013:
   name: "This Is Football 세계최강축구 2003"
   name-sort: "This Is Football - Segye Choegang Chukgu 2003"
@@ -11801,6 +11823,8 @@ SCUS-97277:
 SCUS-97278:
   name: "NCAA Final Four 2004"
   region: "NTSC-U"
+  speedHacks:
+    mvuFlag: 0 # Fixes disappearing basketball.
 SCUS-97279:
   name: "Jet Li - Rise to Honor"
   region: "NTSC-U"
@@ -12038,6 +12062,8 @@ SCUS-97369:
 SCUS-97370:
   name: "NCAA Final Four 2004"
   region: "NTSC-U"
+  speedHacks:
+    mvuFlag: 0 # Fixes disappearing basketball.
 SCUS-97372:
   name: "Jet Li - Rise to Honor [Demo]"
   region: "NTSC-U"
@@ -12146,9 +12172,11 @@ SCUS-97400:
   name: "EyeToy - Groove"
   region: "NTSC-U"
 SCUS-97401:
-  name: "Hot Shots Golf FORE!"
+  name: "Hot Shots Golf Fore!"
   region: "NTSC-U"
   compat: 5
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCUS-97402:
   name: "Killzone"
   region: "NTSC-U"
@@ -12269,8 +12297,10 @@ SCUS-97425:
   name: "Online Start-Up Disc v3.0"
   region: "NTSC-U"
 SCUS-97427:
-  name: "Hot Shots Golf FORE! [Online Public Beta]"
+  name: "Hot Shots Golf Fore! [Online Public Beta]"
   region: "NTSC-U"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCUS-97428:
   name: "Kiosk Demo Disc Q3-Q4 2004"
   region: "NTSC-U"
@@ -12291,8 +12321,10 @@ SCUS-97429:
     - "SCUS-97429"
     - "SCUS-97465"
 SCUS-97430:
-  name: "Hot Shots Golf FORE! [Regular Demo]"
+  name: "Hot Shots Golf Fore! [Regular Demo]"
   region: "NTSC-U"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCUS-97431:
   name: "Killzone Public Beta V1.0"
   region: "NTSC-U"
@@ -12745,8 +12777,10 @@ SCUS-97514:
   name: "ATV Offroad Fury 3 [Greatest Hits]"
   region: "NTSC-U"
 SCUS-97515:
-  name: "Hot Shots Golf FORE! [Greatest Hits]"
+  name: "Hot Shots Golf Fore! [Greatest Hits]"
   region: "NTSC-U"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 SCUS-97516:
   name: "Jak 3 [Greatest Hits]"
   region: "NTSC-U"
@@ -14038,6 +14072,8 @@ SLED-53097:
   region: "PAL-M5"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLED-53109:
   name: "Juiced [Demo]"
   region: "PAL-M5"
@@ -14725,9 +14761,13 @@ SLES-50126:
   name: "Quake III - Revolution"
   region: "PAL-M3"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-50127:
   name: "Quake III - Revolution"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-50128:
   name: "Knockout Kings 2001"
   region: "PAL-E"
@@ -17642,6 +17682,7 @@ SLES-51301:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SLES-51302:
   name: "Bomberman Kart"
   region: "PAL-M3"
@@ -18839,6 +18880,8 @@ SLES-51843:
   name: "Worms 3D"
   region: "PAL-M5"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLES-51845:
   name: "Barbie Horse Adventures - Wild Horse Rescue"
   region: "PAL-M6"
@@ -20106,6 +20149,7 @@ SLES-52342:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     PCRTCOverscan: 1 # Centers game output.
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLES-52343:
   name: "Midway Arcade Treasures"
   region: "PAL-E"
@@ -21310,6 +21354,7 @@ SLES-52734:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     PCRTCOverscan: 1 # Centers game output.
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLES-52737:
   name: "Obscure"
   region: "PAL-E"
@@ -22501,6 +22546,8 @@ SLES-53096:
   compat: 5
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLES-53098:
   name: "Conspiracy - Weapons of Mass Destruction"
   region: "PAL-M5"
@@ -23149,10 +23196,14 @@ SLES-53381:
   name: "The King of Fighters 2002"
   name-sort: "King of Fighters 2002, The"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-53382:
   name: "The King of Fighters 2003"
   name-sort: "King of Fighters 2003, The"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-53383:
   name: "Metal Slug 5"
   region: "PAL-E"
@@ -25279,6 +25330,8 @@ SLES-53999:
   name: "The King of Fighters - Neo Wave"
   name-sort: "King of Fighters, The - Neo Wave"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-54002:
   name: "FlatOut 2"
   region: "PAL-M5"
@@ -26428,6 +26481,8 @@ SLES-54374:
 SLES-54376:
   name: "Nickelodeon Barnyard"
   region: "PAL-E"
+  speedHacks:
+    instantVU1: 0 # Significantly improves game speed.
   gsHWFixes:
     halfPixelOffset: 2 # Fix text and post blur.
     autoFlush: 2 # Needed for recursive mipmap rendering.
@@ -26436,6 +26491,8 @@ SLES-54376:
 SLES-54377:
   name: "Nick - Der tierisch verrückte Bauernhof"
   region: "PAL-G"
+  speedHacks:
+    instantVU1: 0 # Significantly improves game speed.
   gsHWFixes:
     halfPixelOffset: 2 # Fix text and post blur.
     autoFlush: 2 # Needed for recursive mipmap rendering.
@@ -26444,6 +26501,8 @@ SLES-54377:
 SLES-54378:
   name: "Nickelodeon Barnyard"
   region: "PAL-M4"
+  speedHacks:
+    instantVU1: 0 # Significantly improves game speed.
   gsHWFixes:
     halfPixelOffset: 2 # Fix text and post blur.
     autoFlush: 2 # Needed for recursive mipmap rendering.
@@ -26523,6 +26582,8 @@ SLES-54394:
 SLES-54395:
   name: "NeoGeo Battle Coliseum"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-54396:
   name: "Cricket 07"
   region: "PAL-E"
@@ -26633,6 +26694,8 @@ SLES-54437:
   name: "The King of Fighters XI"
   name-sort: "King of Fighters XI, The"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-54439:
   name: "Okami"
   region: "PAL-M3"
@@ -29512,6 +29575,8 @@ SLES-55280:
   name: "The King of Fighters '98 - Ultimate Match"
   name-sort: "King of Fighters '98, The - Ultimate Match"
   region: "PAL-E"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLES-55281:
   name: "Nickelodeon Dora the Explorer - Dora Saves the Snow Princess"
   region: "PAL-M3"
@@ -30218,8 +30283,11 @@ SLES-55569:
   name: "Silent Hill - Shattered Memories"
   region: "PAL-M5"
   gsHWFixes:
+    minimumBlendingLevel: 2 # Fixes pause menu transition.
     disablePartialInvalidation: 1 # Fixes missing graphics.
-    halfPixelOffset: 2 # Fixes ghosting.
+    textureInsideRT: 1 # Fixes pause menu transition.
+    halfPixelOffset: 5 # Fixes post-processing and bloom misaligment.
+    nativeScaling: 2 # Fixes post-processing smoothness and position.
 SLES-55572:
   name: "Marvel Super Hero Squad"
   region: "PAL-M6"
@@ -31819,6 +31887,8 @@ SLKA-25167:
   name-sort: "King of Fighters XI, The"
   name-en: "The King of Fighters XI"
   region: "NTSC-K"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLKA-25168:
   name: "스맥다운　대　로우　２００７"
   name-en: "WWE SmackDown! vs. RAW 2007"
@@ -32413,11 +32483,15 @@ SLKA-25275:
   name-sort: "King of Fighters 2002, The"
   name-en: "The King of Fighters 2002"
   region: "NTSC-K"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLKA-25276:
   name: "더 킹 오브 파이터즈 2003"
   name-sort: "King of Fighters 2003, The"
   name-en: "The King of Fighters 2003"
   region: "NTSC-K"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLKA-25277:
   name: "브라더스 인 암스 - 30 고지를 향한 길"
   name-en: "Brothers in Arms - Road to Hill 30"
@@ -33480,6 +33554,12 @@ SLKA-25465:
   name: "사일런트 힐: 섀터드 메모리즈" # Undumped on ReDump as of 2025-08-28
   name-en: "Silent Hill - Shattered Memories"
   region: "NTSC-K"
+  gsHWFixes:
+    minimumBlendingLevel: 2 # Fixes pause menu transition.
+    disablePartialInvalidation: 1 # Fixes missing graphics.
+    textureInsideRT: 1 # Fixes pause menu transition.
+    halfPixelOffset: 5 # Fixes post-processing and bloom misaligment.
+    nativeScaling: 2 # Fixes post-processing smoothness and position.
 SLKA-25466:
   name: "비트매니아 IIDX 16 엠프레스 + 프리미엄 베스트 [Disc 1 of 2 - Empress Disc]" # Undumped and unconfirmed on ReDump as of 2025-08-28
   name-en: "Beatmania IIDX 16 - Empress + Premium Best [Disc 1 of 2 - Empress Disc]"
@@ -34852,6 +34932,12 @@ SLPM-55231:
   name-sort: "さいれんとひる しゃったーどめもりーず"
   name-en: "Silent Hill - Shattered Memories"
   region: "NTSC-J"
+  gsHWFixes:
+    minimumBlendingLevel: 2 # Fixes pause menu transition.
+    disablePartialInvalidation: 1 # Fixes missing graphics.
+    textureInsideRT: 1 # Fixes pause menu transition.
+    halfPixelOffset: 5 # Fixes post-processing and bloom misaligment.
+    nativeScaling: 2 # Fixes post-processing smoothness and position.
 SLPM-55233:
   name: "金色のコルダ [KOEI The Best]"
   name-sort: "きんいろのこるだ [KOEI The Best]"
@@ -35495,6 +35581,7 @@ SLPM-60174:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SLPM-60175:
   name: "湾岸ミッドナイト [体験版]"
   name-sort: "わんがんみっどないと [たいけんばん]"
@@ -55111,6 +55198,8 @@ SLPS-20108:
   name-sort: "くぇーく3 れぼりゅーしょん"
   name-en: "Quake III - Revolution"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-20109:
   name: "スター・ウォーズ - スターファイター -"
   name-sort: "すたーうぉーず すたーふぁいたー"
@@ -57306,6 +57395,7 @@ SLPS-25034:
   name-en: "Flower, Sun, and Rain"
   region: "NTSC-J"
   gsHWFixes:
+    minimumBlendingLevel: 4 # Fixes broken shading in some areas.
     textureInsideRT: 1 # Fixes some of the many graphical issues.
 SLPS-25035:
   name: "モンスターファーム"
@@ -57792,6 +57882,7 @@ SLPS-25113:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SLPS-25114:
   name: "機甲武装Gブレイカー 第三次クラウディア大戦"
   name-sort: "きこうぶそうGぶれいかー だいさんじくらうでぃあたいせん"
@@ -58026,6 +58117,7 @@ SLPS-25154:
   name-en: "Flower, Sun, and Rain [Victor The Best]"
   region: "NTSC-J"
   gsHWFixes:
+    minimumBlendingLevel: 4 # Fixes broken shading in some areas.
     textureInsideRT: 1 # Fixes some of the many graphical issues.
 SLPS-25155:
   name: "ウルトラマン Fighting Evolution 2"
@@ -59146,6 +59238,8 @@ SLPS-25347:
   name-sort: "ざ きんぐ おぶ ふぁいたーず2002"
   name-en: "King of Fighters 2002, The"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25348:
   name: "こころの扉 初回限定版 [コレクターズエディション]"
   name-sort: "こころのとびら しょかいげんていばん [これくたーずえでぃしょん]"
@@ -59542,6 +59636,8 @@ SLPS-25407:
   name-sort: "ざ きんぐ おぶ ふぁいたーず2003"
   name-en: "King of Fighters 2003, The"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25408:
   name: "アーマード・コア ナインブレイカー"
   name-sort: "あーまーどこあ ないんぶれいかー"
@@ -59794,11 +59890,15 @@ SLPS-25448:
   name-sort: "ざ きんぐ おぶ ふぁいたーず 94 RE-BOUT [すぺしゃるげんていばん]"
   name-en: "The King of Fighters '94 - Re-Bout [Special Pack]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25449:
   name: "THE KING OF FIGHTERS 94 RE-BOUT"
   name-sort: "ざ きんぐ おぶ ふぁいたーず 94 RE-BOUT"
   name-en: "King of Fighters '94, The - Re-Bout"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25450:
   name: "テイルズ オブ リバース"
   name-sort: "ているず おぶ りばーす"
@@ -59815,6 +59915,7 @@ SLPS-25451:
   name-en: "Hana to Taiyou to Ame to [Super Best Collection]"
   region: "NTSC-J"
   gsHWFixes:
+    minimumBlendingLevel: 4 # Fixes broken shading in some areas.
     textureInsideRT: 1 # Fixes some of the many graphical issues.
 SLPS-25452:
   name: "キノの旅 -the Beautiful World- [電撃SP]"
@@ -60235,6 +60336,8 @@ SLPS-25525:
   name-en: "King of Fighters, The - NeoWave"
   region: "NTSC-J"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25526:
   name: "MEDICAL 91"
   name-sort: "めでぃかる 91"
@@ -60428,6 +60531,8 @@ SLPS-25558:
   name-en: "NeoGeo Battle Coliseum"
   region: "NTSC-J"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25559:
   name: "サムライスピリッツ 天下一剣客伝"
   name-sort: "さむらいすぴりっつ てんかいちけんかくでん"
@@ -60516,6 +60621,8 @@ SLPS-25573:
   name-sort: "ざ きんぐ おぶ ふぁいたーず2002 [SNK Best Collection]"
   name-en: "King of Fighters 2002, The [SNK Best Collection]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25574:
   name: "パチパラ12 ～大海と夏のおもいで～"
   name-sort: "ぱちぱら12 おおうみとなつのおもいで"
@@ -60921,6 +61028,8 @@ SLPS-25635:
   name-sort: "ざ きんぐ おぶ ふぁいたーず2003 [SNK BEST COLLECTION]"
   name-en: "King of Fighters 2003, The [SNK Best Collection]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25636:
   name: "KOF MAXIMUM IMPACT MANIAX"
   name-sort: "ざ きんぐ おぶ ふぁいたーず まきしまむ いんぱくと まにあっくす"
@@ -61128,6 +61237,8 @@ SLPS-25660:
   name-en: "King of Fighters XI, The"
   region: "NTSC-J"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25661:
   name: "NEOGEOオンラインコレクション Vol.7 THE KING OF FIGHTERS ～ネスツ編～"
   name-sort: "ねおじおおんらいんこれくしょん Vol. 7 ざ きんぐ おぶ ふぁいたーず ねすつへん"
@@ -61436,6 +61547,8 @@ SLPS-25712:
   name-sort: "ざ きんぐ おぶ ふぁいたーず ねお うぇーぶ [SNK BEST COLLECTION]"
   name-en: "King of Fighters Neowave [SNK Best Collection]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25713:
   name: "ティンクルスタースプライツーLa Petite Princesse- [SNK BEST COLLECTION]"
   name-sort: "てぃんくるすたーすぷらいつーLa Petite Princesse- [SNK BEST COLLECTION]"
@@ -61591,6 +61704,8 @@ SLPS-25737:
   name-sort: "ねおじおばとるころしあむ [SNK BEST COLLECTION]"
   name-en: "Neo Geo Battle Coliseum [SNK Best]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25738:
   name: "SOUL CRADLE 世界を喰らう者 [初回限定版]"
   name-sort: "そうるくれいどる せかいをくらうもの [しょかいげんていばん]"
@@ -61856,6 +61971,8 @@ SLPS-25783:
   name-sort: "ねおじおおんらいんこれくしょん Vol.10 ざ きんぐ おぶ ふぁいたーず98あるてぃめっとまっち"
   name-en: "King of Fighters '98, The - Ultimate Match"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25784:
   name: "Another Century's Episode 3 THE FINAL"
   name-sort: "あなざーせんちゅりーずえぴそーど 3 ざ ふぁいなる"
@@ -61893,6 +62010,8 @@ SLPS-25789:
   name-sort: "ざ きんぐ おぶ ふぁいたーずⅪ [SNK BEST COLLECTION]"
   name-en: "King of Fighters XI, The [SNK Best Collection]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25790:
   name: "NEOGEOオンラインコレクション THE BEST 龍虎の拳 ～天・地・人～"
   name-sort: "ねおじおおんらいんこれくしょん THE BEST りゅうこのけん てんちじん"
@@ -62665,6 +62784,8 @@ SLPS-25915:
   name-sort: "ざ きんぐ おぶ ふぁいたーず2002 UNLIMITED MATCH"
   name-en: "King of Fighters 2002, The - Unlimited Match"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25916:
   name: "新宿の狼"
   name-sort: "しんじゅくのおおかみ"
@@ -62773,6 +62894,8 @@ SLPS-25935:
   name-sort: "ねおじおおんらいんこれくしょん THE BEST ざ きんぐ おぶ ふぁいたーず'98 あるてぃめっとまっち"
   name-en: "King of Fighters '98, The - Ultimate Match [NeoGeo Online Collection the Best]"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25936:
   name: "NEOGEOオンラインコレクション THE BEST サンソフトコレクション"
   name-sort: "ねおじおおんらいんこれくしょん THE BEST さんそふとこれくしょん"
@@ -62986,6 +63109,8 @@ SLPS-25983:
   name-sort: "ざ きんぐ おぶ ふぁいたーず2002 UNLIMITED MATCH とうげきver."
   name-en: "King of Fighters 2002, The - Unlimited Match"
   region: "NTSC-J"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLPS-25986:
   name: "トゥームレイダー アンダーワールド [Spike The Best]"
   name-sort: "とぅーむれいだー あんだーわーるど [Spike The Best]"
@@ -63279,6 +63404,7 @@ SLPS-73204:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SLPS-73205:
   name: "エースコンバット04 シャッタードスカイ [PlayStation2 the Best]"
   name-sort: "えーすこんばっと04 しゃったーどすかい [PlayStation2 the Best]"
@@ -64702,6 +64828,8 @@ SLUS-20167:
   name: "Quake III - Revolution"
   region: "NTSC-U"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLUS-20168:
   name: "Triple Play Baseball"
   region: "NTSC-U"
@@ -66681,6 +66809,7 @@ SLUS-20561:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SLUS-20562:
   name: ".hack Mutation Part 2"
   region: "NTSC-U"
@@ -68515,6 +68644,8 @@ SLUS-20894:
   name: "Worms 3D"
   region: "NTSC-U"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLUS-20895:
   name: "Bujingai - The Forsaken City"
   region: "NTSC-U"
@@ -69134,9 +69265,13 @@ SLUS-20994:
 SLUS-20995:
   name: "King of Fighters 2002 & 2003 [Disc 1 of 2]"
   region: "NTSC-U"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLUS-20996:
   name: "King of Fighters 2002 & 2003 [Disc 2 of 2]"
   region: "NTSC-U"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLUS-20997:
   name: "Midway Arcade Treasures 2"
   region: "NTSC-U"
@@ -69728,6 +69863,8 @@ SLUS-21093:
   compat: 5
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes z fighting in main menu and in game.
 SLUS-21094:
   name: "Midway Arcade Treasures 3"
   region: "NTSC-U"
@@ -70924,6 +71061,8 @@ SLUS-21277:
   name: "Nickelodeon Barnyard"
   region: "NTSC-U"
   compat: 5
+  speedHacks:
+    instantVU1: 0 # Significantly improves game speed.
   gsHWFixes:
     halfPixelOffset: 2 # Fix text and post blur.
     autoFlush: 2 # Needed for recursive mipmap rendering.
@@ -73396,6 +73535,8 @@ SLUS-21687:
   name-sort: "King of Fighters XI, The"
   region: "NTSC-U"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLUS-21688:
   name: "MotoGP '07"
   region: "NTSC-U"
@@ -73497,6 +73638,8 @@ SLUS-21707:
 SLUS-21708:
   name: "NeoGeo Battle Coliseum"
   region: "NTSC-U"
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLUS-21709:
   name: "Obscure - The Aftermath"
   region: "NTSC-U"
@@ -74118,6 +74261,8 @@ SLUS-21816:
   name: "King Of Fighters 98 - Ultimate Match"
   region: "NTSC-U"
   compat: 5
+  gsHWFixes:
+    limit24BitDepth: 2 # Fixes flickering and missing textures.
 SLUS-21817:
   name: "SBK Superbike World Championship"
   region: "NTSC-U"
@@ -74510,8 +74655,11 @@ SLUS-21899:
   region: "NTSC-U"
   compat: 5
   gsHWFixes:
+    minimumBlendingLevel: 2 # Fixes pause menu transition.
     disablePartialInvalidation: 1 # Fixes missing graphics.
-    halfPixelOffset: 2 # Fixes ghosting.
+    textureInsideRT: 1 # Fixes pause menu transition.
+    halfPixelOffset: 5 # Fixes post-processing and bloom misaligment.
+    nativeScaling: 2 # Fixes post-processing smoothness and position.
 SLUS-21900:
   name: "Scooby-Doo! First Frights"
   region: "NTSC-U"
@@ -74835,6 +74983,7 @@ SLUS-28025:
   gsHWFixes:
     autoFlush: 1 # Fixes incorrect blur effect.
     halfPixelOffset: 4 # Improves blur.
+    limit24BitDepth: 2 # Fixes invisible menus and cursor.
 SLUS-28026:
   name: "EverQuest Online Adventures [Beta Vol.3.0]"
   region: "NTSC-U"
@@ -75884,8 +76033,10 @@ TCES-52456:
     nativeScaling: 1 # Fixes light blooms.
     autoFlush: 2 # Helps fix misaligned bloom.
 TCES-52582:
-  name: "Everybody's Golf 4 Beta Trial Code"
+  name: "Everybody's Golf 4 [Beta Trial Code]"
   region: "PAL-E"
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering.
 TCES-53033:
   name: "Formula One 05 Beta Trial Code"
   region: "PAL-E"

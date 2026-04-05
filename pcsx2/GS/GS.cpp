@@ -438,9 +438,9 @@ void GSvsync(u32 field, bool registers_written)
 	// Update this here because we need to check if the pending draw affects the current frame, so our regs need to be updated.
 	g_gs_renderer->PCRTCDisplays.SetVideoMode(g_gs_renderer->GetVideoMode());
 	g_gs_renderer->PCRTCDisplays.EnableDisplays(g_gs_renderer->m_regs->PMODE, g_gs_renderer->m_regs->SMODE2, g_gs_renderer->isReallyInterlaced());
-	g_gs_renderer->PCRTCDisplays.CheckSameSource();
 	g_gs_renderer->PCRTCDisplays.SetRects(0, g_gs_renderer->m_regs->DISP[0].DISPLAY, g_gs_renderer->m_regs->DISP[0].DISPFB);
 	g_gs_renderer->PCRTCDisplays.SetRects(1, g_gs_renderer->m_regs->DISP[1].DISPLAY, g_gs_renderer->m_regs->DISP[1].DISPFB);
+	g_gs_renderer->PCRTCDisplays.CheckSameSource();
 	g_gs_renderer->PCRTCDisplays.CalculateDisplayOffset(g_gs_renderer->m_scanmask_used);
 	g_gs_renderer->PCRTCDisplays.CalculateFramebufferOffset(g_gs_renderer->m_scanmask_used, g_gs_renderer->m_regs->DISP[0].DISPFB, g_gs_renderer->m_regs->DISP[1].DISPFB);
 
@@ -596,6 +596,14 @@ std::vector<GSAdapterInfo> GSGetAdapterInfo(GSRendererType renderer)
 			auto factory = D3D::CreateFactory(false);
 			if (factory)
 				ret = D3D::GetAdapterInfo(factory.get());
+		}
+		break;
+#endif
+
+#ifdef ENABLE_OPENGL
+		case GSRendererType::OGL:
+		{
+			ret = GSDeviceOGL::GetAdapterInfo();
 		}
 		break;
 #endif
@@ -775,6 +783,9 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 	// Handle OSD scale changes by pushing a window resize through.
 	if (new_config.OsdScale != old_config.OsdScale)
 		ImGuiManager::RequestScaleUpdate();
+
+	if (new_config.OsdFontPath != old_config.OsdFontPath)
+		ImGuiManager::ReloadFonts();
 
 	// Options which need a full teardown/recreate.
 	if (!GSConfig.RestartOptionsAreEqual(old_config))

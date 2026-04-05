@@ -12,6 +12,7 @@
 
 #include "common/Console.h"
 #include "common/Error.h"
+#include "common/ScopedGuard.h"
 #include "common/StringUtil.h"
 
 #include "imgui.h"
@@ -130,6 +131,71 @@ GSDeviceOGL::~GSDeviceOGL()
 	pxAssert(!m_gl_context);
 }
 
+std::vector<GSAdapterInfo> GSDeviceOGL::GetAdapterInfo()
+{
+	std::vector<GSAdapterInfo> ret;
+
+	// If OGL is currently active, query the live device directly.
+	if (g_gs_device && g_gs_device->GetRenderAPI() == RenderAPI::OpenGL)
+	{
+		GSAdapterInfo ai;
+		const std::string& live_name = static_cast<GSDeviceOGL*>(g_gs_device.get())->m_name;
+		ai.name = live_name.empty() ? "OpenGL" : live_name;
+		ai.max_texture_size = g_gs_device->GetMaxTextureSize();
+		ai.max_upscale_multiplier = GSGetMaxUpscaleMultiplier(ai.max_texture_size);
+		ret.emplace_back(std::move(ai));
+		return ret;
+	}
+
+	static std::optional<GSAdapterInfo> s_cached_adapter;
+	if (s_cached_adapter.has_value())
+	{
+		ret.emplace_back(*s_cached_adapter);
+		return ret;
+	}
+
+	static bool s_logged_probe_failure = false;
+
+	WindowInfo wi = {};
+	wi.type = WindowInfo::Type::Surfaceless;
+
+	Error error;
+	std::unique_ptr<GLContext> context = GLContext::Create(wi, &error);
+	if (!context)
+	{
+		if (!s_logged_probe_failure)
+		{
+			Console.WarningFmt("GL: Failed to query GL_MAX_TEXTURE_SIZE for adapter info: {}", error.GetDescription());
+			s_logged_probe_failure = true;
+		}
+		return ret;
+	}
+
+	if (!context->MakeCurrent())
+	{
+		if (!s_logged_probe_failure)
+		{
+			Console.Warning("GL: Failed to make temporary context current while querying GL_MAX_TEXTURE_SIZE for adapter info.");
+			s_logged_probe_failure = true;
+		}
+		return ret;
+	}
+
+	const ScopedGuard done_current([&context]() { context->DoneCurrent(); });
+
+	GLint max_texture_size = 1024;
+	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
+
+	GSAdapterInfo ai;
+	const GLubyte* renderer_name = glGetString(GL_RENDERER);
+	ai.name = renderer_name ? reinterpret_cast<const char*>(renderer_name) : "OpenGL";
+	ai.max_texture_size = std::max(static_cast<u32>((max_texture_size > 0) ? max_texture_size : 1024), 1024u);
+	ai.max_upscale_multiplier = GSGetMaxUpscaleMultiplier(ai.max_texture_size);
+	s_cached_adapter = ai;
+	ret.emplace_back(std::move(ai));
+	return ret;
+}
+
 GSTexture* GSDeviceOGL::CreateSurface(GSTexture::Type type, int width, int height, int levels, GSTexture::Format format)
 {
 	GL_PUSH("Create surface");
@@ -236,10 +302,6 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		glGenFramebuffers(1, &m_fbo_write);
 
 		OMSetFBO(m_fbo);
-
-		// Always write to the first buffer
-		static constexpr GLenum target[1] = {GL_COLOR_ATTACHMENT0};
-		glDrawBuffers(1, target);
 
 		// Always read from the first buffer
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, m_fbo_read);
@@ -690,8 +752,10 @@ bool GSDeviceOGL::CheckFeatures()
 	if (!GLAD_GL_ARB_texture_barrier)
 	{
 		glTextureBarrier = ReplaceGL::TextureBarrier;
+		// Switch to fallback.
+		m_features.multidraw_fb_copy = true;
 		Host::AddOSDMessage(
-			"GL_ARB_texture_barrier is not supported, blending will not be accurate.", Host::OSD_ERROR_DURATION);
+			"GL_ARB_texture_barrier is not supported, blending will be slower.", Host::OSD_ERROR_DURATION);
 	}
 
 	if (!GLAD_GL_ARB_direct_state_access)
@@ -725,18 +789,20 @@ bool GSDeviceOGL::CheckFeatures()
 	}
 
 	if (GSConfig.OverrideTextureBarriers == 0)
+	{
 		m_features.texture_barrier = m_features.framebuffer_fetch; // Force Disabled
+		m_features.multidraw_fb_copy = false;
+		Host::AddOSDMessage(
+			"Texture Barrier is disabled, blending will not be accurate.", Host::OSD_ERROR_DURATION);
+	}
 	else if (GSConfig.OverrideTextureBarriers == 1)
+	{
 		m_features.texture_barrier = true; // Force Enabled
+		m_features.multidraw_fb_copy = false;
+	}
 	else
 		m_features.texture_barrier = m_features.framebuffer_fetch || GLAD_GL_ARB_texture_barrier;
-	if (!m_features.texture_barrier)
-	{
-		Host::AddOSDMessage(
-			"GL_ARB_texture_barrier is not supported, blending will not be accurate.", Host::OSD_ERROR_DURATION);
-	}
 
-	m_features.multidraw_fb_copy = false;
 	m_features.provoking_vertex_last = true;
 	m_features.dxt_textures = GLAD_GL_EXT_texture_compression_s3tc;
 	m_features.bptc_textures =
@@ -744,6 +810,39 @@ bool GSDeviceOGL::CheckFeatures()
 	m_features.prefer_new_textures = false;
 	m_features.stencil_buffer = true;
 	m_features.test_and_sample_depth = m_features.texture_barrier;
+	if (m_features.texture_barrier)
+	{
+		// Auto select chooses depth-as-rt as it appears to be more compatible across hardware.
+		if (GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::DepthAsRT ||
+			GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
+		{
+			m_features.depth_feedback = GSDevice::DepthFeedbackSupport::DepthAsRT;
+		}
+		else if (GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Depth)
+		{
+			m_features.depth_feedback = GSDevice::DepthFeedbackSupport::Depth;
+		}
+		else
+		{
+			m_features.depth_feedback = GSDevice::DepthFeedbackSupport::None;
+		}
+	}
+	else if (m_features.multidraw_fb_copy)
+	{
+		if (GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Depth ||
+			GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
+		{
+			m_features.depth_feedback = GSDevice::DepthFeedbackSupport::Depth;
+		}
+		else
+		{
+			m_features.depth_feedback = GSDevice::DepthFeedbackSupport::None;
+		}
+	}
+	else
+	{
+		m_features.depth_feedback = GSDevice::DepthFeedbackSupport::None;
+	}
 
 	if (GLAD_GL_ARB_shader_storage_buffer_object)
 	{
@@ -859,11 +958,22 @@ void GSDeviceOGL::DestroyResources()
 		glDeleteBuffers(1, &m_expand_ibo);
 
 	if (m_fbo != 0)
+	{
 		glDeleteFramebuffers(1, &m_fbo);
+		m_fbo = 0;
+	}
 	if (m_fbo_read != 0)
+	{
 		glDeleteFramebuffers(1, &m_fbo_read);
+		m_fbo_read = 0;
+	}
 	if (m_fbo_write != 0)
+	{
 		glDeleteFramebuffers(1, &m_fbo_write);
+		m_fbo_write = 0;
+	}
+
+	GLState::fbo = 0;
 }
 
 bool GSDeviceOGL::UpdateWindow()
@@ -1308,6 +1418,24 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 		header += "#define PS_HAS_CONSERVATIVE_DEPTH 0\n";
 	}
 
+	switch (m_features.depth_feedback)
+	{
+		case GSDevice::DepthFeedbackSupport::None:
+			header += "#define DEPTH_FEEDBACK_SUPPORT 0\n"; // None
+			static_assert(static_cast<int>(GSDevice::DepthFeedbackSupport::None) == 0);
+			break;
+		case GSDevice::DepthFeedbackSupport::Depth:
+			header += "#define DEPTH_FEEDBACK_SUPPORT 1\n"; // Depth
+			static_assert(static_cast<int>(GSDevice::DepthFeedbackSupport::Depth) == 1);
+			break;
+		case GSDevice::DepthFeedbackSupport::DepthAsRT:
+			header += "#define DEPTH_FEEDBACK_SUPPORT 2\n"; // Depth as RT
+			static_assert(static_cast<int>(GSDevice::DepthFeedbackSupport::DepthAsRT) == 2);
+			break;
+		default:
+			pxFail("Incorrect depth feedback support."); // Impossible
+	}
+
 	// Allow to puts several shader in 1 files
 	switch (type)
 	{
@@ -1405,14 +1533,17 @@ std::string GSDeviceOGL::GetPSSource(const PSSelector& sel)
 		+ fmt::format("#define PS_DITHER_ADJUST {}\n", sel.dither_adjust)
 		+ fmt::format("#define PS_ZCLAMP {}\n", sel.zclamp)
 		+ fmt::format("#define PS_ZFLOOR {}\n", sel.zfloor)
+		+ fmt::format("#define PS_ZWRITE {}\n", sel.zwrite)
 		+ fmt::format("#define PS_BLEND_MIX {}\n", sel.blend_mix)
-		+ fmt::format("#define PS_ZCLAMP {}\n", sel.zclamp)
 		+ fmt::format("#define PS_ROUND_INV {}\n", sel.round_inv)
 		+ fmt::format("#define PS_FIXED_ONE_A {}\n", sel.fixed_one_a)
 		+ fmt::format("#define PS_PABE {}\n", sel.pabe)
 		+ fmt::format("#define PS_SCANMSK {}\n", sel.scanmsk)
 		+ fmt::format("#define PS_NO_COLOR {}\n", sel.no_color)
 		+ fmt::format("#define PS_NO_COLOR1 {}\n", sel.no_color1)
+		+ fmt::format("#define PS_ZTST {}\n", sel.ztst)
+		+ fmt::format("#define PS_COLOR_FEEDBACK {}\n", sel.color_feedback)
+		+ fmt::format("#define PS_DEPTH_FEEDBACK {}\n", sel.depth_feedback)
 	;
 
 	std::string src = GenGlslHeader("ps_main", GL_FRAGMENT_SHADER, macro);
@@ -1517,9 +1648,9 @@ void GSDeviceOGL::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTextu
 
 	GL_PUSH("StretchRect from %d to %d", static_cast<GSTextureOGL*>(sTex)->GetID(), static_cast<GSTextureOGL*>(dTex)->GetID());
 	if (draw_in_depth)
-		OMSetRenderTargets(nullptr, dTex);
+		OMSetRenderTargets(nullptr, nullptr, dTex);
 	else
-		OMSetRenderTargets(dTex, nullptr);
+		OMSetRenderTargets(dTex, nullptr, nullptr);
 
 	ps.Bind();
 
@@ -1599,7 +1730,7 @@ void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, 
 	OMSetDepthStencilState(m_convert.dss);
 	OMSetBlendState(false);
 	OMSetColorMaskState();
-	OMSetRenderTargets(dTex, nullptr);
+	OMSetRenderTargets(dTex, nullptr, nullptr);
 
 	PSSetShaderResource(0, sTex);
 	PSSetSamplerState(m_convert.pt);
@@ -1623,7 +1754,7 @@ void GSDeviceOGL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 off
 	OMSetDepthStencilState(m_convert.dss);
 	OMSetBlendState(false);
 	OMSetColorMaskState();
-	OMSetRenderTargets(dTex, nullptr);
+	OMSetRenderTargets(dTex, nullptr, nullptr);
 
 	PSSetShaderResource(0, sTex);
 	PSSetSamplerState(m_convert.pt);
@@ -1647,7 +1778,7 @@ void GSDeviceOGL::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u3
 	OMSetDepthStencilState(m_convert.dss);
 	OMSetBlendState(false);
 	OMSetColorMaskState();
-	OMSetRenderTargets(dTex, nullptr);
+	OMSetRenderTargets(dTex, nullptr, nullptr);
 
 	PSSetShaderResource(0, sTex);
 	PSSetSamplerState(m_convert.pt);
@@ -1691,9 +1822,9 @@ void GSDeviceOGL::DrawMultiStretchRects(
 	OMSetBlendState(false);
 	OMSetColorMaskState();
 	if (!dTex->IsDepthStencil())
-		OMSetRenderTargets(dTex, nullptr);
+		OMSetRenderTargets(dTex, nullptr, nullptr);
 	else
-		OMSetRenderTargets(nullptr, dTex);
+		OMSetRenderTargets(nullptr, nullptr, dTex);
 	m_convert.ps[static_cast<int>(shader)].Bind();
 
 	const GSVector2 ds(static_cast<float>(dTex->GetWidth()), static_cast<float>(dTex->GetHeight()));
@@ -1932,7 +2063,7 @@ void GSDeviceOGL::SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GS
 
 	// sfex3 (after the capcom logo), vf4 (first menu fading in), ffxii shadows, rumble roses shadows, persona4 shadows
 
-	OMSetRenderTargets(nullptr, ds, &GLState::scissor);
+	OMSetRenderTargets(nullptr, nullptr, ds, &GLState::scissor);
 	{
 		constexpr GLint clear_color = 0;
 		glClearBufferiv(GL_STENCIL, 0, &clear_color);
@@ -2233,7 +2364,18 @@ void GSDeviceOGL::OMAttachRt(GSTexture* rt)
 		return;
 
 	GLState::rt = static_cast<GSTextureOGL*>(rt);
-	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt ? static_cast<GSTextureOGL*>(rt)->GetID() : 0, 0);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+		rt ? static_cast<GSTextureOGL*>(rt)->GetID() : 0, 0);
+}
+
+void GSDeviceOGL::OMAttachDsAsRt(GSTexture* ds_as_rt)
+{
+	if (GLState::ds_as_rt == ds_as_rt)
+		return;
+
+	GLState::ds_as_rt = static_cast<GSTextureOGL*>(ds_as_rt);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D,
+		ds_as_rt ? static_cast<GSTextureOGL*>(ds_as_rt)->GetID() : 0, 0);
 }
 
 void GSDeviceOGL::OMAttachDs(GSTexture* ds)
@@ -2274,12 +2416,14 @@ void GSDeviceOGL::OMSetColorMaskState(OMColorMaskSelector sel)
 
 void GSDeviceOGL::OMUnbindTexture(GSTextureOGL* tex)
 {
-	if (GLState::rt != tex && GLState::ds != tex)
+	if (GLState::rt != tex && GLState::ds_as_rt != tex && GLState::ds != tex)
 		return;
 
 	OMSetFBO(m_fbo);
 	if (GLState::rt == tex)
 		OMAttachRt();
+	if (GLState::ds_as_rt == tex)
+		OMAttachDsAsRt();
 	if (GLState::ds == tex)
 		OMAttachDs();
 }
@@ -2328,17 +2472,20 @@ void GSDeviceOGL::OMSetBlendState(bool enable, GLenum src_factor, GLenum dst_fac
 	}
 }
 
-void GSDeviceOGL::OMSetRenderTargets(GSTexture* rt, GSTexture* ds, const GSVector4i* scissor)
+void GSDeviceOGL::OMSetRenderTargets(GSTexture* rt, GSTexture* ds_as_rt, GSTexture* ds, const GSVector4i* scissor)
 {
 	const bool rt_changed = (rt != GLState::rt);
+	const bool ds_as_rt_changed = (ds_as_rt != GLState::ds_as_rt);
 	const bool ds_changed = (ds != GLState::ds);
+	const u32 draw_buffers = GLState::draw_buffers;
 
-	g_perfmon.Put(GSPerfMon::RenderPasses, static_cast<double>(rt_changed || ds_changed));
+	g_perfmon.Put(GSPerfMon::RenderPasses, static_cast<double>(rt_changed || ds_as_rt_changed || ds_changed));
 	// Split up to avoid unbind/bind calls when clearing.
 
 	OMSetFBO(m_fbo);
 
 	GLState::rt_written = false;
+	GLState::ds_as_rt_written = false;
 	GLState::ds_written = false;
 
 	if (rt)
@@ -2350,6 +2497,15 @@ void GSDeviceOGL::OMSetRenderTargets(GSTexture* rt, GSTexture* ds, const GSVecto
 	else
 		OMAttachRt();
 
+	if (ds_as_rt)
+	{
+		OMAttachDsAsRt(ds_as_rt);
+		CommitClear(ds_as_rt, false);
+		GLState::ds_as_rt_written = ds_as_rt_changed;
+	}
+	else
+		OMAttachDsAsRt();
+
 	if (ds)
 	{
 		OMAttachDs(ds);
@@ -2359,11 +2515,18 @@ void GSDeviceOGL::OMSetRenderTargets(GSTexture* rt, GSTexture* ds, const GSVecto
 	else
 		OMAttachDs();
 
-	if (rt || ds)
+	if (rt || ds_as_rt || ds)
 	{
-		const GSVector2i size = rt ? rt->GetSize() : ds->GetSize();
+		const GSVector2i size = rt ? rt->GetSize() : (ds_as_rt ? ds_as_rt->GetSize() : ds->GetSize());
 		SetViewport(size);
 		SetScissor(scissor ? *scissor : GSVector4i::loadh(size));
+	}
+
+	if (draw_buffers != GLState::UpdateDrawBuffers())
+	{
+		// Always write to the first and second buffer
+		static constexpr GLenum target[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+		glDrawBuffers(GLState::draw_buffers, target);
 	}
 }
 
@@ -2452,11 +2615,20 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	if (config.pal)
 		CommitClear(config.pal, true);
 
-	GSVector2i rtsize = (config.rt ? config.rt : config.ds)->GetSize();
-
-	GSTexture* primid_texture = nullptr;
-	GSTexture* draw_rt_clone = nullptr;
+	const GSVector2i rtsize = (config.rt ? config.rt : config.ds)->GetSize();
 	GSTexture* colclip_rt = g_gs_device->GetColorClipTexture();
+	GSTexture* draw_rt_clone = nullptr;
+	GSTexture* draw_ds_clone = nullptr;
+	GSTexture* primid_texture = nullptr;
+
+	ScopedGuard recycle_temp_textures([&]() {
+		if (draw_rt_clone)
+			Recycle(draw_rt_clone);
+		if (draw_ds_clone)
+			Recycle(draw_ds_clone);
+		if (primid_texture)
+			Recycle(primid_texture);
+	});
 
 	if (colclip_rt)
 	{
@@ -2493,7 +2665,7 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 				return;
 			}
 
-			OMSetRenderTargets(colclip_rt, config.ds, nullptr);
+			OMSetRenderTargets(colclip_rt, nullptr, config.ds, nullptr);
 
 			g_gs_device->SetColorClipTexture(colclip_rt);
 
@@ -2504,6 +2676,7 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	}
 
 	// Destination Alpha Setup
+	const bool multidraw_fb_copy = m_features.multidraw_fb_copy && (config.require_one_barrier || config.require_full_barrier);
 	switch (config.destination_alpha)
 	{
 		case GSHWDrawConfig::DestinationAlphaMode::Off:
@@ -2518,7 +2691,7 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 			}
 			break;
 		case GSHWDrawConfig::DestinationAlphaMode::StencilOne:
-			if (m_features.texture_barrier)
+			if (m_features.texture_barrier || multidraw_fb_copy)
 			{
 				// Cleared after RT bind.
 				break;
@@ -2559,7 +2732,10 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 		PSSetShaderResource(1, config.pal);
 	if (m_features.texture_barrier && (config.require_one_barrier || config.require_full_barrier))
 		PSSetShaderResource(2, colclip_rt ? colclip_rt : config.rt);
-
+	const bool depth_feedback = m_features.depth_feedback == GSDevice::DepthFeedbackSupport::Depth;
+	if (m_features.texture_barrier && (config.require_one_barrier || config.require_full_barrier) && config.ps.IsFeedbackLoopDepth() &&
+		(depth_feedback || m_features.depth_feedback == GSDevice::DepthFeedbackSupport::DepthAsRT))
+		PSSetShaderResource(4, depth_feedback ? config.ds : config.ds_as_rt);
 	SetupSampler(config.sampler);
 
 	if (m_vs_cb_cache.Update(config.cb_vs))
@@ -2581,16 +2757,20 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 
 	SetupPipeline(psel);
 
-	bool rt_hazard_barrier = config.tex && (config.tex == config.ds || config.tex == config.rt);
+	bool rt_hazard_barrier = config.tex && (config.tex == config.ds || config.tex == config.rt || config.tex == config.ds_as_rt);
 	// In Time Crisis:
 	// 1. Fullscreen sprite reads depth and writes alpha (rt_hazard_barrier true from config.ds == config.tex)
 	// 2. Fullscreen sprite writes gray, rta hw blend blends based on dst alpha.
 	// On Nvidia, 2 seems to not pick up the data written by 1 unless we add a second barrier.
 	// Pretty sure GL is supposed to guarantee that the blend unit is coherent with previous pixel write out, so calling this a bug.
+	bool broken_blend_coherency_barrier = false;
 	if (m_bugs.broken_blend_coherency)
-		rt_hazard_barrier |= (psel.ps.IsFeedbackLoop() || psel.ps.blend_c == 1) && GLState::rt == config.rt;
+		broken_blend_coherency_barrier = (psel.ps.IsFeedbackLoopRT() || psel.ps.blend_c == 1) && GLState::rt == config.rt;
 	if (config.require_one_barrier || !m_features.texture_barrier)
+	{
 		rt_hazard_barrier = false; // Already in place or not available
+		broken_blend_coherency_barrier = false;
+	}
 
 	// additional non-pipeline config stuff
 	const bool point_size_enabled = config.vs.point_size;
@@ -2616,7 +2796,7 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	{
 		GL_PUSH("Destination Alpha PrimID Init");
 
-		OMSetRenderTargets(primid_texture, config.ds, &config.scissor);
+		OMSetRenderTargets(primid_texture, nullptr, config.ds, &config.scissor);
 		OMColorMaskSelector mask;
 		mask.wrgba = 0;
 		mask.wr = true;
@@ -2635,6 +2815,13 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 		PSSetShaderResource(3, primid_texture);
 	}
 
+	if (config.ds_as_rt)
+	{
+		// We must clear the blend equation of any dual source blending factors or
+		// it may interact badly with MRTs, even if blending is disabled.
+		OMSetBlendState(true);
+	}
+
 	if (config.blend.IsEffective(config.colormask))
 	{
 		OMSetBlendState(config.blend.enable, s_gl_blend_factors[config.blend.src_factor],
@@ -2648,6 +2835,7 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	}
 
 	GSTexture* draw_rt = colclip_rt ? colclip_rt : config.rt;
+	GSTexture* draw_ds_as_rt = config.ds_as_rt;
 	GSTexture* draw_ds = config.ds;
 
 	// Clear texture binding when it's bound to RT or DS.
@@ -2661,20 +2849,20 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	// Avoid changing framebuffer just to switch from rt+depth to rt and vice versa.
 	bool fb_optimization_needs_barrier = false;
 	if (!draw_rt && GLState::rt && GLState::ds == draw_ds && config.tex != GLState::rt &&
-		GLState::rt->GetSize() == draw_ds->GetSize())
+		GLState::rt->GetSize() == draw_ds->GetSize() && !draw_ds_as_rt)
 	{
 		draw_rt = GLState::rt;
 		fb_optimization_needs_barrier = !GLState::rt_written;
 	}
 	else if (!draw_ds && GLState::ds && GLState::rt == draw_rt && config.tex != GLState::ds &&
-			 GLState::ds->GetSize() == draw_rt->GetSize())
+		GLState::ds->GetSize() == draw_rt->GetSize() && !draw_ds_as_rt)
 	{
 		draw_ds = GLState::ds;
 		fb_optimization_needs_barrier = !GLState::ds_written;
 	}
 
 	// Be careful of the rt already being bound and the blend using the RT without a barrier.
-	if (fb_optimization_needs_barrier && rt_hazard_barrier)
+	if ((fb_optimization_needs_barrier && broken_blend_coherency_barrier) || rt_hazard_barrier)
 	{
 		// Ensure all depth writes are finished before sampling
 		GL_INS("GL: Texture barrier to flush depth or rt before reading");
@@ -2682,38 +2870,37 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 		glTextureBarrier();
 	}
 
-	if (draw_rt && (config.require_one_barrier || (config.tex && config.tex == config.rt)) && !m_features.texture_barrier)
+	if (draw_rt && (config.require_one_barrier || (config.require_full_barrier && m_features.multidraw_fb_copy) || (config.tex && config.tex == config.rt)) &&
+		!m_features.texture_barrier)
 	{
 		// Requires a copy of the RT.
 		draw_rt_clone = CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true);
-		if (draw_rt_clone)
-		{
-			GL_PUSH("GL: Copy RT to temp texture {%d,%d %dx%d}",
-				config.drawarea.left, config.drawarea.top,
-				config.drawarea.width(), config.drawarea.height());
-			const GSVector4i snapped_drawarea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.drawarea);
-			CopyRect(draw_rt, draw_rt_clone, snapped_drawarea, snapped_drawarea.left, snapped_drawarea.top);
-			if (config.require_one_barrier)
-				PSSetShaderResource(2, draw_rt_clone);
-			if (config.tex && config.tex == config.rt)
-				PSSetShaderResource(0, draw_rt_clone);
-		}
-		else
+		if (!draw_rt_clone)
 			Console.Warning("GL: Failed to allocate temp texture for RT copy.");
 	}
 
-	OMSetRenderTargets(draw_rt, draw_ds, &config.scissor);
+	if (draw_ds && (config.require_one_barrier || (config.require_full_barrier && m_features.multidraw_fb_copy)) &&
+		!m_features.texture_barrier && depth_feedback && config.ps.IsFeedbackLoopDepth())
+	{
+		// Requires a copy of the DS.
+		draw_ds_clone = CreateTexture(rtsize.x, rtsize.y, 1, draw_ds->GetFormat(), true);
+		if (!draw_ds_clone)
+			Console.Warning("GL: Failed to allocate temp texture for DS copy.");
+	}
+
+	OMSetRenderTargets(draw_rt, draw_ds_as_rt, draw_ds, &config.scissor);
 	OMSetColorMaskState(config.colormask);
 	SetupOM(config.depth);
 
 	// Clear stencil as close as possible to the RT bind, to avoid framebuffer swaps.
-	if (config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne && m_features.texture_barrier)
+	if (config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne && (m_features.texture_barrier || multidraw_fb_copy))
 	{
 		constexpr GLint clear_color = 1;
 		glClearBufferiv(GL_STENCIL, 0, &clear_color);
 	}
 
-	SendHWDraw(config, config.require_one_barrier, config.require_full_barrier);
+	SendHWDraw(config, draw_rt_clone, draw_rt, draw_ds_clone, draw_ds,
+		config.require_one_barrier, config.require_full_barrier);
 
 	if (config.blend_multi_pass.enable)
 	{
@@ -2760,13 +2947,9 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 			OMSetBlendState();
 		}
 		SetupOM(config.alpha_second_pass.depth);
-		SendHWDraw(config, config.alpha_second_pass.require_one_barrier, config.alpha_second_pass.require_full_barrier);
+		SendHWDraw(config, draw_rt_clone, draw_rt, draw_ds_clone, draw_ds,
+			m_features.texture_barrier ? config.alpha_second_pass.require_one_barrier : false, config.alpha_second_pass.require_full_barrier);
 	}
-
-	if (primid_texture)
-		Recycle(primid_texture);
-	if (draw_rt_clone)
-		Recycle(draw_rt_clone);
 
 	if (colclip_rt)
 	{
@@ -2785,47 +2968,57 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	}
 }
 
-void GSDeviceOGL::SendHWDraw(const GSHWDrawConfig& config, bool one_barrier, bool full_barrier)
+void GSDeviceOGL::SendHWDraw(const GSHWDrawConfig& config,
+	GSTexture* draw_rt_clone, GSTexture* draw_rt, GSTexture* draw_ds_clone, GSTexture* draw_ds,
+	const bool one_barrier, const bool full_barrier)
 {
-	if (!m_features.texture_barrier) [[unlikely]]
-	{
-		DrawIndexedPrimitive();
-		return;
-	}
-
 #ifdef PCSX2_DEVBUILD
-	if ((one_barrier || full_barrier) && !config.ps.IsFeedbackLoop()) [[unlikely]]
+	if ((one_barrier || full_barrier) && !(config.ps.IsFeedbackLoopRT() || config.ps.IsFeedbackLoopDepth())) [[unlikely]]
 		Console.Warning("OpenGL: Possible unnecessary barrier detected.");
 #endif
+
+	auto CopyAndBind = [&](GSVector4i drawarea) {
+		if (draw_rt_clone)
+		{
+			CopyRect(draw_rt, draw_rt_clone, drawarea, drawarea.left, drawarea.top);
+			if ((one_barrier || full_barrier))
+				PSSetShaderResource(2, draw_rt_clone);
+			if (config.tex && config.tex == draw_rt)
+				PSSetShaderResource(0, draw_rt_clone);
+		}
+		if (draw_ds_clone)
+		{
+			CopyRect(draw_ds, draw_ds_clone, drawarea, drawarea.left, drawarea.top);
+			PSSetShaderResource(4, draw_ds_clone);
+		}
+	};
+
+	const GSVector4i rtsize(0, 0, (draw_rt ? draw_rt : draw_ds)->GetWidth(), (draw_rt ? draw_rt : draw_ds)->GetHeight());
 
 	if (full_barrier)
 	{
 		pxAssert(config.drawlist && !config.drawlist->empty());
 		
-		GL_PUSH("Split the draw");
-#if defined(_DEBUG)
-		// Check how draw call is split.
-		std::map<size_t, size_t> frequency;
-		for (const auto& it : *config.drawlist)
-			++frequency[it];
-
-		std::string message;
-		for (const auto& it : frequency)
-			message += " " + std::to_string(it.first) + "(" + std::to_string(it.second) + ")";
-
-		GL_PERF("Split single draw (%d primitives) into %zu draws: consecutive draws(frequency):%s",
-		        config.nindices / config.indices_per_prim, config.drawlist->size(), message.c_str());
-#endif
-
 		const u32 indices_per_prim = config.indices_per_prim;
 		const u32 draw_list_size = static_cast<u32>(config.drawlist->size());
 
-		g_perfmon.Put(GSPerfMon::Barriers, static_cast<u32>(draw_list_size));
+		if (m_features.texture_barrier)
+			g_perfmon.Put(GSPerfMon::Barriers, static_cast<u32>(draw_list_size));
+		else
+			pxAssert(config.drawlist_bbox && static_cast<u32>(config.drawlist_bbox->size()) == draw_list_size);
 
 		for (u32 n = 0, p = 0; n < draw_list_size; n++)
 		{
 			const u32 count = (*config.drawlist)[n] * indices_per_prim;
-			glTextureBarrier();
+
+			if (m_features.texture_barrier)
+				glTextureBarrier();
+			else
+			{
+				const GSVector4i original_bbox = (*config.drawlist_bbox)[n].rintersect(config.drawarea);
+				CopyAndBind(ProcessCopyArea(rtsize, original_bbox));
+			}
+
 			DrawIndexedPrimitive(p, count);
 			p += count;
 		}
@@ -2835,8 +3028,16 @@ void GSDeviceOGL::SendHWDraw(const GSHWDrawConfig& config, bool one_barrier, boo
 
 	if (one_barrier)
 	{
-		g_perfmon.Put(GSPerfMon::Barriers, 1);
-		glTextureBarrier();
+		if (m_features.texture_barrier)
+		{
+			g_perfmon.Put(GSPerfMon::Barriers, 1);
+			glTextureBarrier();
+		}
+		else
+		{
+			// Optimization: For alpha second pass we can reuse the copy snapshot from the first pass.
+			CopyAndBind(ProcessCopyArea(rtsize, config.drawarea));
+		}
 	}
 
 	DrawIndexedPrimitive();

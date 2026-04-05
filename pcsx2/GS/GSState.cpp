@@ -431,6 +431,8 @@ const char* GSState::GetFlushReasonString(GSFlushReason reason)
 			return "VSYNC";
 		case GSFlushReason::GSREOPEN:
 			return "GS REOPEN";
+		case GSFlushReason::VERTEXCOUNT:
+			return "VERTEX COUNT";
 		case GSFlushReason::UNKNOWN:
 		default:
 			return "UNKNOWN";
@@ -5115,7 +5117,7 @@ __forceinline void GSState::VertexKick(u32 skip)
 				break;
 		}
 
-#ifndef _M_ARM64
+#ifndef ARCH_ARM64
 		// We only care about the xy passing the skip test. zw is the offset coordinates for native culling.
 		skip |= test.mask() & 0xff;
 #else

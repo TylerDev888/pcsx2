@@ -17,8 +17,6 @@
 #include "common/YAML.h"
 
 #include <sstream>
-#include "ryml_std.hpp"
-#include "ryml.hpp"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include <fstream>
@@ -368,9 +366,11 @@ static const char* s_gs_hw_fix_names[] = {
 	"preloadFrameData",
 	"disablePartialInvalidation",
 	"textureInsideRT",
+	"limit24BitDepth",
 	"alignSprite",
 	"mergeSprite",
 	"mipmap",
+	"accurateAlphaTest",
 	"forceEvenSpritePosition",
 	"bilinearUpscale",
 	"nativePaletteDraw",
@@ -596,6 +596,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::TextureInsideRT:
 			return (static_cast<int>(config.UserHacks_TextureInsideRt) == value);
 
+		case GSHWFixId::Limit24BitDepth:
+			return (static_cast<int>(config.UserHacks_Limit24BitDepth) == value);
+
 		case GSHWFixId::AlignSprite:
 			return (config.UpscaleMultiplier <= 1.0f || static_cast<int>(config.UserHacks_AlignSpriteX) == value);
 
@@ -622,6 +625,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 
 		case GSHWFixId::Mipmap:
 			return (static_cast<int>(config.HWMipmap) == value);
+
+		case GSHWFixId::AccurateAlphaTest:
+			return (static_cast<int>(config.HWAccurateAlphaTest) == value);
 
 		case GSHWFixId::TrilinearFiltering:
 			return (config.TriFilter == TriFiltering::Automatic || static_cast<int>(config.TriFilter) == value);
@@ -743,6 +749,13 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 			}
 			break;
 
+			case GSHWFixId::Limit24BitDepth:
+			{
+				if (value >= 0 && value <= static_cast<int>(GSLimit24BitDepth::PrioritizeLower))
+					config.UserHacks_Limit24BitDepth = static_cast<GSLimit24BitDepth>(value);
+			}
+			break;
+
 			case GSHWFixId::AlignSprite:
 				config.UserHacks_AlignSpriteX = (value > 0);
 				break;
@@ -780,6 +793,10 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 			case GSHWFixId::Mipmap:
 				config.HWMipmap = (value > 0);
+				break;
+
+			case GSHWFixId::AccurateAlphaTest:
+				config.HWAccurateAlphaTest = (value > 0);
 				break;
 
 			case GSHWFixId::TrilinearFiltering:

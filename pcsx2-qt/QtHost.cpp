@@ -78,7 +78,7 @@ namespace QtHost
 	static void HookSignals();
 	static void RegisterTypes();
 	static bool RunSetupWizard();
-	static std::optional<bool> DownloadFile(QWidget* parent, const QString& title, std::string url, std::vector<u8>* data);
+	std::optional<bool> DownloadFile(QWidget* parent, const QString& title, std::string url, std::vector<u8>* data);
 } // namespace QtHost
 
 //////////////////////////////////////////////////////////////////////////
@@ -2410,8 +2410,6 @@ int main(int argc, char* argv[])
 	std::shared_ptr<VMBootParameters> autoboot;
 	if (!QtHost::ParseCommandLineOptions(app.arguments(), autoboot))
 		return EXIT_FAILURE;
-
-	SysMemory::ReserveMemory();
 
 	// Bail out if we can't find any config.
 	if (!QtHost::InitializeConfig())
