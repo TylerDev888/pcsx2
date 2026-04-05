@@ -1,4 +1,76 @@
-# PCSX2
+# PCSX2 with additional PINE socket support - Used for creating programs that need control of the pcsx2.
+
+The PINE protocol had no way for external tools to control execution or inspect EE/IOP CPU state. This adds 30 new opcodes (0x10–0x2D) that expose the complete PCSX2 GUI debugger interface over the existing PINE socket, including named save states, disassembly, symbol database queries, and local variable inspection.
+
+## New opcodes
+
+### Execution control and breakpoints
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x10` | `MsgGetProgramCounter` | EE PC + paused flag (`u32` + `u8`) |
+| `0x11` | `MsgPause` | Halt at next instruction boundary |
+| `0x12` | `MsgResume` | Resume execution |
+| `0x13` | `MsgStep` | Execute one instruction while paused; returns new PC |
+| `0x14` | `MsgSetBreakpoint` | Register PC breakpoint at EE address |
+| `0x15` | `MsgClearBreakpoint` | Remove a breakpoint; `IPC_FAIL` if not found |
+| `0x16` | `MsgClearAllBreakpoints` | Remove all PC breakpoints |
+
+### Register access
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x17` | `MsgGetRegisters` | Quick read: 32 EE GPRs (lower 32 bits) + PC + HI + LO |
+| `0x18` | `MsgGetRegister` | Read any register on EE or IOP by CPU type, category, index → 16-byte u128 |
+| `0x19` | `MsgSetRegister` | Write any register (paused only) by CPU type, category, index |
+
+### Process state
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x1A` | `MsgGetEEThreads` | List all EE threads (TID, PC, status, wait, priority, entry, stack top) |
+| `0x1B` | `MsgGetIOPThreads` | List all IOP threads (same format) |
+| `0x1C` | `MsgGetModules` | List loaded IOP modules (name, version, text/data/bss addresses and sizes) |
+| `0x1D` | `MsgGetStack` | Walk the EE call stack (entry, PC, SP, frame size per frame) |
+
+### High-level stepping and symbol lookup
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x1E` | `MsgStepInto` | Set temp BP at next instruction and resume (non-blocking) |
+| `0x1F` | `MsgStepOver` | Set temp BP past function calls and resume (non-blocking) |
+| `0x20` | `MsgStepOut` | Walk stack to caller, set temp BP, and resume (non-blocking) |
+| `0x21` | `MsgGetSymbol` | Look up EE function symbol name by address |
+
+### Save-state and emulator control
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x22` | `MsgSaveStateFile` | Save state to a named file path (async; `u16` path length prefix + UTF-8 path) |
+| `0x23` | `MsgLoadStateFile` | Load state from a named file path (blocking; `IPC_FAIL` on error) |
+| `0x24` | `MsgReset` | Cold-boot reset |
+| `0x25` | `MsgFrameAdvance` | Advance N video frames then pause (`u8` count) |
+| `0x26` | `MsgGetFPS` | Current emulated framerate as `f32` |
+| `0x27` | `MsgSetLimiterMode` | Set speed limiter (0=Nominal, 1=Turbo, 2=Slomo, 3=Unlimited) |
+
+### Breakpoint inspection and disassembly
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x28` | `MsgListBreakpoints` | List active EE and/or IOP PC breakpoints (addr + enabled + cpu per entry) |
+| `0x29` | `MsgDisassemble` | Disassemble up to 1000 instructions at an address on EE or IOP |
+
+### Symbol database queries
+
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x2A` | `MsgListFunctions` | Paginated list of EE function symbols (offset + max_count → total + [addr, size, name]) |
+| `0x2B` | `MsgGetSymbolByName` | Look up any EE symbol by demangled name → address + size |
+| `0x2C` | `MsgListGlobals` | Paginated list of EE global variables (same format as `MsgListFunctions`) |
+| `0x2D` | `MsgGetLocals` | List parameters and locals for the function containing a given EE address |
+
+provide
+
 
 ![Windows Build Status](https://img.shields.io/github/actions/workflow/status/PCSX2/pcsx2/windows_build_matrix.yml?label=%F0%9F%96%A5%EF%B8%8F%20Windows%20Builds)
 ![Linux Build Status](https://img.shields.io/github/actions/workflow/status/PCSX2/pcsx2/linux_build_matrix.yml?label=%F0%9F%90%A7%20Linux%20Builds)
