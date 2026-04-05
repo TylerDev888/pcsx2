@@ -1,4 +1,4 @@
-# PCSX2 with additional PINE socket support - Used for creating programs that need control of the pcsx2.
+# PCSX2 with additional PINE socket support - Used for creating programs that need remote control of the pcsx2.
 
 The PINE protocol had no way for external tools to control execution or inspect EE/IOP CPU state. This adds 30 new opcodes (0x10–0x2D) that expose the complete PCSX2 GUI debugger interface over the existing PINE socket, including named save states, disassembly, symbol database queries, and local variable inspection.
 
