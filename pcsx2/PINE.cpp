@@ -9,15 +9,21 @@
 #include "SaveState.h"
 #include "PINE.h"
 #include "VMManager.h"
+#include "DebugTools/Breakpoints.h"
+#include "DebugTools/MIPSAnalyst.h"
+#include "DebugTools/MipsStackWalk.h"
+#include "R5900.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <span>
 #include <sys/types.h>
 #include <thread>
+#include <unordered_set>
 
 #include "fmt/format.h"
 
@@ -136,6 +142,13 @@ namespace PINEServer
 	static std::vector<u8> s_ipc_buffer;
 
 	/**
+	 * Set of EE PC addresses registered as PINE breakpoints.
+	 * Guarded by s_bp_mutex.
+	 */
+	static std::unordered_set<u32> s_breakpoints;
+	static std::mutex s_bp_mutex;
+
+	/**
 	 * IPC Command messages opcodes.
 	 * A list of possible operations possible by the IPC.
 	 * Each one of them is what we call an "opcode" and is the first
@@ -159,6 +172,36 @@ namespace PINEServer
 		MsgUUID = 0xD, /**< Returns the game UUID. */
 		MsgGameVersion = 0xE, /**< Returns the game verion. */
 		MsgStatus = 0xF, /**< Returns the emulator status. */
+		MsgGetProgramCounter   = 0x10, /**< Returns EE PC and pause state. */
+		MsgPause               = 0x11, /**< Pauses the emulator. */
+		MsgResume              = 0x12, /**< Resumes the emulator. */
+		MsgStep                = 0x13, /**< Steps one EE instruction. */
+		MsgSetBreakpoint       = 0x14, /**< Sets a breakpoint at the given EE address. */
+		MsgClearBreakpoint     = 0x15, /**< Clears a breakpoint at the given EE address. */
+		MsgClearAllBreakpoints = 0x16, /**< Clears all EE breakpoints. */
+		MsgGetRegisters        = 0x17, /**< Returns EE GPRs, PC, HI, LO. */
+		MsgGetRegister         = 0x18, /**< Read one register: CPU type, category, index → u128. */
+		MsgSetRegister         = 0x19, /**< Write one register: CPU type, category, index, u128. */
+		MsgGetEEThreads        = 0x1A, /**< List all EE (R5900) threads. */
+		MsgGetIOPThreads       = 0x1B, /**< List all IOP (R3000) threads. */
+		MsgGetModules          = 0x1C, /**< List all IOP modules. */
+		MsgGetStack            = 0x1D, /**< Walk the EE call stack. */
+		MsgStepInto            = 0x1E, /**< Step into next instruction (non-blocking). */
+		MsgStepOver            = 0x1F, /**< Step over function calls (non-blocking). */
+		MsgStepOut             = 0x20, /**< Step out of current function (non-blocking). */
+		MsgGetSymbol           = 0x21, /**< Look up EE function symbol by address. */
+		MsgSaveStateFile       = 0x22, /**< Save state to a named file path. */
+		MsgLoadStateFile       = 0x23, /**< Load state from a named file path. */
+		MsgReset               = 0x24, /**< Cold-boot reset. */
+		MsgFrameAdvance        = 0x25, /**< Advance N video frames then pause. */
+		MsgGetFPS              = 0x26, /**< Current emulated framerate as f32. */
+		MsgSetLimiterMode      = 0x27, /**< Set speed limiter mode (0=Nominal, 1=Turbo, 2=Slomo, 3=Unlimited). */
+		MsgListBreakpoints     = 0x28, /**< List all active EE and/or IOP breakpoints. */
+		MsgDisassemble         = 0x29, /**< Disassemble N instructions at an address. */
+		MsgListFunctions       = 0x2A, /**< Paginated list of EE function symbols. */
+		MsgGetSymbolByName     = 0x2B, /**< Look up any EE symbol by name → address. */
+		MsgListGlobals         = 0x2C, /**< Paginated list of EE global variables. */
+		MsgGetLocals           = 0x2D, /**< List locals/params for the function containing an EE address. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -258,10 +301,25 @@ namespace PINEServer
 		return !((command_len + command_size) > buf_size ||
 				 (reply_len + reply_size) >= MAX_IPC_RETURN_SIZE);
 	}
-} // namespace PINEServer
+}
+
+	static inline u32 NormalizePcKseg0(u32 vaddr)
+	{
+		if ((vaddr & 0xE0000000u) == 0xA0000000u)
+			return (vaddr & 0x1FFFFFFFu) | 0x80000000u;
+		return vaddr;
+	}
+ // namespace PINEServer
 
 bool PINEServer::Initialize(int slot)
 {
+	// Refuse to initialize if a server is already running in this process.
+	if (IsInitialized())
+	{
+		Console.WriteLn(Color_Yellow, "PINE: A server is already running on slot %d. Skipping initialization.", slot);
+		return false;
+	}
+
 	s_end.store(false, std::memory_order_release);
 	s_slot = slot;
 
@@ -273,12 +331,39 @@ bool PINEServer::Initialize(int slot)
 		return false;
 	}
 
+	// Probe whether another process is already listening on this TCP port.
+	{
+		SOCKET probe = socket(AF_INET, SOCK_STREAM, 0);
+		if (probe != INVALID_SOCKET)
+		{
+			sockaddr_in probe_addr = {};
+			probe_addr.sin_family = AF_INET;
+			probe_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			probe_addr.sin_port = htons(static_cast<u_short>(slot));
+			if (connect(probe, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0)
+			{
+				closesocket(probe);
+				Console.WriteLn(Color_Red, "PINE: A server is already listening on port %d. Shutting down...", slot);
+				s_end.store(true, std::memory_order_release);
+				return false;
+			}
+			closesocket(probe);
+		}
+	}
+
 	s_sock = socket(AF_INET, SOCK_STREAM, 0);
-	if ((s_sock == INVALID_SOCKET) || slot > 65536)
+	if ((s_sock == INVALID_SOCKET) || slot > 65535)
 	{
 		Console.WriteLn(Color_Red, "PINE: Cannot open socket! Shutting down...");
 		Deinitialize();
 		return false;
+	}
+
+	// Prevent address reuse so two instances cannot silently share the same port.
+	{
+		BOOL exclusive = TRUE;
+		if (setsockopt(s_sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) == SOCKET_ERROR)
+			Console.WriteLn(Color_Yellow, "PINE: Could not set SO_EXCLUSIVEADDRUSE (error %d); duplicate servers may go undetected.", WSAGetLastError());
 	}
 
 	sockaddr_in server = {};
@@ -315,6 +400,29 @@ bool PINEServer::Initialize(int slot)
 
 	struct sockaddr_un server;
 
+	// Probe whether another process is already listening on this Unix socket.
+	// Only unlink a stale (dead) socket file; refuse to replace a live server.
+	{
+		int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (probe >= 0)
+		{
+			struct sockaddr_un probe_addr;
+			probe_addr.sun_family = AF_UNIX;
+			StringUtil::Strlcpy(probe_addr.sun_path, s_socket_name, sizeof(probe_addr.sun_path));
+			if (connect(probe, reinterpret_cast<struct sockaddr*>(&probe_addr), sizeof(probe_addr)) == 0)
+			{
+				close(probe);
+				Console.WriteLn(Color_Red, "PINE: A server is already listening on %s. Shutting down...", s_socket_name.c_str());
+				s_socket_name = {};
+				s_end.store(true, std::memory_order_release);
+				return false;
+			}
+			close(probe);
+		}
+		// No live server — safe to remove a stale socket file if it exists.
+		unlink(s_socket_name.c_str());
+	}
+
 	s_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (s_sock < 0)
 	{
@@ -325,9 +433,6 @@ bool PINEServer::Initialize(int slot)
 	server.sun_family = AF_UNIX;
 	StringUtil::Strlcpy(server.sun_path, s_socket_name, sizeof(server.sun_path));
 
-	// we unlink the socket so that when releasing this thread the socket gets
-	// freed even if we didn't close correctly the loop
-	unlink(s_socket_name.c_str());
 	if (bind(s_sock, (struct sockaddr*)&server, sizeof(struct sockaddr_un)))
 	{
 		Console.WriteLn(Color_Red, "PINE: Error while binding to socket! Shutting down...");
@@ -510,6 +615,21 @@ void PINEServer::Deinitialize()
 
 PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8>& ret_buffer, u32 buf_size)
 {
+	// Buffer-size constants for new opcodes
+	// Breakpoints: addr(4) + enabled(1) + cpu(1) = 6 bytes each
+	static constexpr int MAX_BREAKPOINTS_RESPONSE = 10000;
+	static constexpr int BREAKPOINT_ENTRY_SIZE    = 6;
+	// Disassembly: addr(4) + len(1) + text(255 max) = 260 bytes each
+	static constexpr int MAX_DISASSEMBLY_LINES     = 1000;
+	static constexpr int MAX_DISASSEMBLY_LINE_SIZE = 4 + 1 + 255;
+	// Symbol listing: addr(4) + size(4) + name_len(1) + name(255 max) = 264 bytes each
+	// Max batch is bounded so that (ret_cnt_initial + header + batch*entry) < MAX_IPC_RETURN_SIZE (450000)
+	static constexpr int MAX_SYMBOL_BATCH          = 1500;
+	static constexpr int MAX_SYMBOL_ENTRY_SIZE     = 4 + 4 + 1 + 255;
+	// Locals: storage_type(1) + value(4) + name_len(1) + name(255 max) = 261 bytes each
+	static constexpr int MAX_LOCALS_RESPONSE       = 512;
+	static constexpr int MAX_LOCAL_ENTRY_SIZE      = 1 + 4 + 1 + 255;
+
 	u32 ret_cnt = 5;
 	u32 buf_cnt = 0;
 
@@ -746,6 +866,806 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 
 				ToResultVector(ret_buffer, status, ret_cnt);
 				ret_cnt += 4;
+				break;
+			}
+			case MsgGetProgramCounter:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 5, buf_size)) [[unlikely]]
+					goto error;
+
+				u32 pc = 0;
+				u8 paused = 0;
+				Host::RunOnCPUThread([&]() {
+					pc = NormalizePcKseg0(cpuRegs.pc);
+					paused = (VMManager::GetState() == VMState::Paused) ? 1 : 0;
+				}, true);
+
+				ToResultVector(ret_buffer, pc, ret_cnt);
+				ret_cnt += 4;
+				ret_buffer[ret_cnt++] = paused;
+				break;
+			}
+			case MsgPause:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::SetPaused(true); }, true);
+				break;
+			}
+			case MsgResume:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::SetPaused(false); }, true);
+				break;
+			}
+			case MsgStep:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4, buf_size)) [[unlikely]]
+					goto error;
+
+				bool stepped = false;
+				u32 new_pc = 0;
+				Host::RunOnCPUThread([&]() {
+					if (VMManager::GetState() != VMState::Paused)
+						return;
+					intCpu.Step();
+					new_pc = NormalizePcKseg0(cpuRegs.pc);
+					stepped = true;
+				}, true);
+
+				if (!stepped)
+					goto error;
+
+				ToResultVector(ret_buffer, new_pc, ret_cnt);
+				ret_cnt += 4;
+				break;
+			}
+			case MsgSetBreakpoint:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				Host::RunOnCPUThread([addr]() {
+					CBreakPoints::AddBreakPoint(BREAKPOINT_EE, addr, false, true, false);
+				}, true);
+				buf_cnt += 4;
+				break;
+			}
+			case MsgClearBreakpoint:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				bool had_bp = false;
+				Host::RunOnCPUThread([addr, &had_bp]() {
+					had_bp = CBreakPoints::IsAddressBreakPoint(BREAKPOINT_EE, addr);
+					if (had_bp)
+						CBreakPoints::RemoveBreakPoint(BREAKPOINT_EE, addr);
+				}, true);
+				buf_cnt += 4;
+
+				if (!had_bp)
+					goto error;
+
+				break;
+			}
+			case MsgClearAllBreakpoints:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { CBreakPoints::ClearAllBreakPoints(); }, true);
+				break;
+			}
+			case MsgGetRegisters:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 140, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([&]() {
+					for (int i = 0; i < 32; i++)
+					{
+						ToResultVector(ret_buffer, cpuRegs.GPR.r[i].UL[0], ret_cnt);
+						ret_cnt += 4;
+					}
+					ToResultVector(ret_buffer, NormalizePcKseg0(cpuRegs.pc), ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, cpuRegs.HI.UL[0], ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, cpuRegs.LO.UL[0], ret_cnt);
+					ret_cnt += 4;
+				}, true);
+
+				break;
+			}
+			case MsgGetRegister:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 3, ret_cnt, 16, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				const u8 cat     = FromSpan<u8>(buf, buf_cnt + 1);
+				const u8 num     = FromSpan<u8>(buf, buf_cnt + 2);
+				DebugInterface& dbg = DebugInterface::get(cpu_sel == 0 ? BREAKPOINT_EE : BREAKPOINT_IOP);
+				u128 val;
+				Host::RunOnCPUThread([&]() { val = dbg.getRegister(cat, num); }, true);
+				ToResultVector(ret_buffer, val, ret_cnt);
+				ret_cnt += 16;
+				buf_cnt += 3;
+				break;
+			}
+			case MsgSetRegister:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 3 + 16, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				const u8 cat     = FromSpan<u8>(buf, buf_cnt + 1);
+				const u8 num     = FromSpan<u8>(buf, buf_cnt + 2);
+				const u128 val   = FromSpan<u128>(buf, buf_cnt + 3);
+				DebugInterface& dbg = DebugInterface::get(cpu_sel == 0 ? BREAKPOINT_EE : BREAKPOINT_IOP);
+				Host::RunOnCPUThread([&]() { dbg.setRegister(cat, num, val); }, true);
+				buf_cnt += 3 + 16;
+				break;
+			}
+			case MsgGetEEThreads:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
+				// count(4) + up to 256 threads × 22 bytes each
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 256 * 22, buf_size)) [[unlikely]]
+					goto error;
+
+				std::vector<std::unique_ptr<BiosThread>> threads;
+				Host::RunOnCPUThread([&]() { threads = r5900Debug.GetThreadList(); }, true);
+
+				const u32 count = static_cast<u32>(threads.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& t : threads)
+				{
+					ToResultVector(ret_buffer, t->TID(), ret_cnt);           ret_cnt += 4;
+					ToResultVector(ret_buffer, t->PC(), ret_cnt);            ret_cnt += 4;
+					ret_buffer[ret_cnt++] = static_cast<u8>(t->Status());
+					ret_buffer[ret_cnt++] = static_cast<u8>(t->Wait());
+					ToResultVector(ret_buffer, t->Priority(), ret_cnt);      ret_cnt += 4;
+					ToResultVector(ret_buffer, t->EntryPoint(), ret_cnt);    ret_cnt += 4;
+					ToResultVector(ret_buffer, t->StackTop(), ret_cnt);      ret_cnt += 4;
+				}
+				break;
+			}
+			case MsgGetIOPThreads:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
+				// count(4) + up to 1000 threads × 22 bytes each
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1000 * 22, buf_size)) [[unlikely]]
+					goto error;
+
+				std::vector<std::unique_ptr<BiosThread>> threads;
+				Host::RunOnCPUThread([&]() { threads = r3000Debug.GetThreadList(); }, true);
+
+				const u32 count = static_cast<u32>(threads.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& t : threads)
+				{
+					ToResultVector(ret_buffer, t->TID(), ret_cnt);           ret_cnt += 4;
+					ToResultVector(ret_buffer, t->PC(), ret_cnt);            ret_cnt += 4;
+					ret_buffer[ret_cnt++] = static_cast<u8>(t->Status());
+					ret_buffer[ret_cnt++] = static_cast<u8>(t->Wait());
+					ToResultVector(ret_buffer, t->Priority(), ret_cnt);      ret_cnt += 4;
+					ToResultVector(ret_buffer, t->EntryPoint(), ret_cnt);    ret_cnt += 4;
+					ToResultVector(ret_buffer, t->StackTop(), ret_cnt);      ret_cnt += 4;
+				}
+				break;
+			}
+			case MsgGetModules:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
+				// count(4) + up to 1000 modules × 58 bytes each
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1000 * 58, buf_size)) [[unlikely]]
+					goto error;
+
+				std::vector<IopMod> modules;
+				Host::RunOnCPUThread([&]() { modules = r3000Debug.GetModuleList(); }, true);
+
+				const u32 count = static_cast<u32>(modules.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& m : modules)
+				{
+					// name: 32 bytes, NUL-padded
+					const size_t name_len = std::min(m.name.size(), static_cast<size_t>(31));
+					memset(&ret_buffer[ret_cnt], 0, 32);
+					memcpy(&ret_buffer[ret_cnt], m.name.c_str(), name_len);
+					ret_cnt += 32;
+					ToResultVector(ret_buffer, m.version,   ret_cnt); ret_cnt += 2;
+					ToResultVector(ret_buffer, m.text_addr, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, m.entry,     ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, m.gp,        ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, m.text_size, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, m.data_size, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, m.bss_size,  ret_cnt); ret_cnt += 4;
+				}
+				break;
+			}
+			case MsgGetStack:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (VMManager::GetState() != VMState::Paused)
+					goto error;
+				// count(4) + up to MAX_DEPTH × 16 bytes per frame
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1024 * 16, buf_size)) [[unlikely]]
+					goto error;
+
+				std::vector<MipsStackWalk::StackFrame> frames;
+				Host::RunOnCPUThread([&]() {
+					for (const auto& t : r5900Debug.GetThreadList())
+					{
+						if (t->Status() == ThreadStatus::THS_RUN)
+						{
+							frames = MipsStackWalk::Walk(
+								&r5900Debug,
+								r5900Debug.getPC(),
+								static_cast<u32>(r5900Debug.getRegister(0, 31)),
+								static_cast<u32>(r5900Debug.getRegister(0, 29)),
+								t->EntryPoint(),
+								t->StackTop());
+							break;
+						}
+					}
+				}, true);
+
+				const u32 count = static_cast<u32>(frames.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& f : frames)
+				{
+					ToResultVector(ret_buffer, f.entry,     ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, f.pc,        ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, f.sp,        ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, static_cast<u32>(f.stackSize), ret_cnt); ret_cnt += 4;
+				}
+				break;
+			}
+			case MsgStepInto:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!r5900Debug.isAlive() || !r5900Debug.isCpuPaused())
+					goto error;
+
+				const u32 pc   = r5900Debug.getPC();
+				const MIPSAnalyst::MipsOpcodeInfo info = MIPSAnalyst::GetOpcodeInfo(&r5900Debug, pc);
+				u32 bp_addr = pc + 4;
+				if (info.isBranch)
+				{
+					if (!info.isConditional)
+						bp_addr = info.branchTarget;
+					else
+						bp_addr = info.conditionMet ? info.branchTarget : pc + 8;
+				}
+				if (info.isSyscall)
+					bp_addr = info.branchTarget;
+
+				Host::RunOnCPUThread([pc, bp_addr]() {
+					CBreakPoints::SetSkipFirst(BREAKPOINT_EE, pc);
+					CBreakPoints::AddBreakPoint(BREAKPOINT_EE, bp_addr, true, true, true);
+					r5900Debug.resumeCpu();
+				});
+				break;
+			}
+			case MsgStepOver:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!r5900Debug.isAlive() || !r5900Debug.isCpuPaused())
+					goto error;
+
+				const u32 pc   = r5900Debug.getPC();
+				const MIPSAnalyst::MipsOpcodeInfo info = MIPSAnalyst::GetOpcodeInfo(&r5900Debug, pc);
+				u32 bp_addr = pc + 4;
+				if (info.isBranch)
+				{
+					if (!info.isConditional)
+					{
+						bp_addr = info.isLinkedBranch ? pc + 8 : info.branchTarget;
+					}
+					else
+					{
+						bp_addr = info.conditionMet ? info.branchTarget : pc + 8;
+					}
+				}
+
+				Host::RunOnCPUThread([pc, bp_addr]() {
+					CBreakPoints::SetSkipFirst(BREAKPOINT_EE, pc);
+					CBreakPoints::AddBreakPoint(BREAKPOINT_EE, bp_addr, true, true, true);
+					r5900Debug.resumeCpu();
+				});
+				break;
+			}
+			case MsgStepOut:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!r5900Debug.isAlive() || !r5900Debug.isCpuPaused())
+					goto error;
+
+				std::vector<MipsStackWalk::StackFrame> frames;
+				const u32 current_pc = r5900Debug.getPC();
+				for (const auto& t : r5900Debug.GetThreadList())
+				{
+					if (t->Status() == ThreadStatus::THS_RUN)
+					{
+						frames = MipsStackWalk::Walk(
+							&r5900Debug,
+							current_pc,
+							static_cast<u32>(r5900Debug.getRegister(0, 31)),
+							static_cast<u32>(r5900Debug.getRegister(0, 29)),
+							t->EntryPoint(),
+							t->StackTop());
+						break;
+					}
+				}
+				if (frames.size() < 2)
+					goto error;
+
+				{
+					const u32 bp_addr = frames[1].pc;
+					Host::RunOnCPUThread([current_pc, bp_addr]() {
+						CBreakPoints::SetSkipFirst(BREAKPOINT_EE, current_pc);
+						CBreakPoints::AddBreakPoint(BREAKPOINT_EE, bp_addr, true, true, true);
+						r5900Debug.resumeCpu();
+					});
+				}
+				break;
+			}
+			case MsgGetSymbol:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 4 + 256, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 addr = FromSpan<u32>(buf, buf_cnt);
+				FunctionInfo info;
+				Host::RunOnCPUThread([&]() {
+					info = R5900SymbolGuardian.FunctionOverlappingAddress(addr);
+				}, true);
+
+				if (info.name.empty())
+					goto error;
+
+				const u32 sym_start = info.address.get_or_zero();
+				ToResultVector(ret_buffer, sym_start, ret_cnt);
+				ret_cnt += 4;
+				const u32 name_len = static_cast<u32>(info.name.size()) + 1;
+				memcpy(&ret_buffer[ret_cnt], info.name.c_str(), name_len);
+				ret_cnt += name_len;
+				buf_cnt += 4;
+				break;
+			}
+			case MsgSaveStateFile:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u16 path_len = FromSpan<u16>(buf, buf_cnt);
+				if (path_len == 0 || path_len > 512)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2 + path_len, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				std::string path(reinterpret_cast<const char*>(&buf[buf_cnt + 2]), path_len);
+				buf_cnt += 2 + path_len;
+				Host::RunOnCPUThread([path = std::move(path)]() {
+					VMManager::SaveState(path.c_str(), true, false,
+						[](const std::string&) {});
+				});
+				break;
+			}
+			case MsgLoadStateFile:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u16 path_len = FromSpan<u16>(buf, buf_cnt);
+				if (path_len == 0 || path_len > 512)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 2 + path_len, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				std::string path(reinterpret_cast<const char*>(&buf[buf_cnt + 2]), path_len);
+				buf_cnt += 2 + path_len;
+				bool ok = false;
+				Host::RunOnCPUThread([&ok, path = std::move(path)]() {
+					Error err;
+					ok = VMManager::LoadState(path.c_str(), &err);
+				}, true);
+				if (!ok)
+					goto error;
+				break;
+			}
+			case MsgReset:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { VMManager::Reset(); });
+				break;
+			}
+			case MsgFrameAdvance:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 num_frames = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (num_frames == 0)
+					goto error;
+
+				Host::RunOnCPUThread([num_frames]() { VMManager::FrameAdvance(num_frames); });
+				break;
+			}
+			case MsgGetFPS:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4, buf_size)) [[unlikely]]
+					goto error;
+
+				const float fps = VMManager::GetFrameRate();
+				ToResultVector(ret_buffer, fps, ret_cnt);
+				ret_cnt += 4;
+				break;
+			}
+			case MsgSetLimiterMode:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 mode = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (mode > static_cast<u8>(LimiterModeType::Unlimited))
+					goto error;
+
+				VMManager::SetLimiterMode(static_cast<LimiterModeType>(mode));
+				break;
+			}
+			case MsgListBreakpoints:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 4 + MAX_BREAKPOINTS_RESPONSE * BREAKPOINT_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+
+				std::vector<BreakPoint> bps;
+				Host::RunOnCPUThread([&]() {
+					if (cpu_sel == 0 || cpu_sel == 0xFF)
+					{
+						auto ee = CBreakPoints::GetBreakpoints(BREAKPOINT_EE, false);
+						bps.insert(bps.end(), ee.begin(), ee.end());
+					}
+					if (cpu_sel == 1 || cpu_sel == 0xFF)
+					{
+						auto iop = CBreakPoints::GetBreakpoints(BREAKPOINT_IOP, false);
+						bps.insert(bps.end(), iop.begin(), iop.end());
+					}
+				}, true);
+
+				const u32 count = static_cast<u32>(bps.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& bp : bps)
+				{
+					ToResultVector(ret_buffer, bp.addr, ret_cnt);    ret_cnt += 4;
+					ret_buffer[ret_cnt++] = bp.enabled ? 1 : 0;
+					ret_buffer[ret_cnt++] = static_cast<u8>(bp.cpu);
+				}
+				break;
+			}
+			case MsgDisassemble:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				// cpu(1) + addr(4) + count(2) = 7; reply up to MAX_DISASSEMBLY_LINES × MAX_DISASSEMBLY_LINE_SIZE
+				if (!SafetyChecks(buf_cnt, 7, ret_cnt, 2 + MAX_DISASSEMBLY_LINES * MAX_DISASSEMBLY_LINE_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8  cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				const u32 addr    = FromSpan<u32>(buf, buf_cnt + 1);
+				const u16 count   = std::min<u16>(FromSpan<u16>(buf, buf_cnt + 5), MAX_DISASSEMBLY_LINES);
+				buf_cnt += 7;
+
+				DebugInterface& dbg = (cpu_sel == 0) ? static_cast<DebugInterface&>(r5900Debug)
+				                                     : static_cast<DebugInterface&>(r3000Debug);
+
+				std::vector<std::pair<u32, std::string>> lines;
+				lines.reserve(count);
+				Host::RunOnCPUThread([&]() {
+					u32 cur = addr;
+					for (u16 i = 0; i < count; ++i)
+					{
+						std::string text = dbg.disasm(cur, true);
+						lines.emplace_back(cur, std::move(text));
+						cur += 4;
+					}
+				}, true);
+
+				const u16 returned = static_cast<u16>(lines.size());
+				ToResultVector(ret_buffer, returned, ret_cnt);
+				ret_cnt += 2;
+				for (const auto& [line_addr, text] : lines)
+				{
+					ToResultVector(ret_buffer, line_addr, ret_cnt); ret_cnt += 4;
+					const u8 text_len = static_cast<u8>(std::min(text.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = text_len;
+					memcpy(&ret_buffer[ret_cnt], text.c_str(), text_len);
+					ret_cnt += text_len;
+				}
+				break;
+			}
+			case MsgListFunctions:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 6, ret_cnt, 4 + 2 + MAX_SYMBOL_BATCH * MAX_SYMBOL_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 offset    = FromSpan<u32>(buf, buf_cnt);
+				const u16 max_count = FromSpan<u16>(buf, buf_cnt + 4);
+				buf_cnt += 6;
+
+				u32 total = 0;
+				std::vector<std::tuple<u32, u32, std::string>> funcs; // addr, size, name
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					total = static_cast<u32>(db.functions.size());
+					u32 idx = 0;
+					for (const ccc::Function& f : db.functions)
+					{
+						if (idx++ < offset)
+							continue;
+						if (funcs.size() >= max_count)
+							break;
+						funcs.emplace_back(f.address().get_or_zero(), f.size(), f.name());
+					}
+				});
+
+				ToResultVector(ret_buffer, total, ret_cnt);
+				ret_cnt += 4;
+				const u16 returned = static_cast<u16>(funcs.size());
+				ToResultVector(ret_buffer, returned, ret_cnt);
+				ret_cnt += 2;
+				for (const auto& [faddr, fsize, fname] : funcs)
+				{
+					ToResultVector(ret_buffer, faddr, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, fsize, ret_cnt); ret_cnt += 4;
+					const u8 name_len = static_cast<u8>(std::min(fname.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = name_len;
+					memcpy(&ret_buffer[ret_cnt], fname.c_str(), name_len);
+					ret_cnt += name_len;
+				}
+				break;
+			}
+			case MsgGetSymbolByName:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 4 + 4, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 name_len = FromSpan<u8>(buf, buf_cnt);
+				if (name_len == 0)
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + name_len, ret_cnt, 4 + 4, buf_size)) [[unlikely]]
+					goto error;
+
+				const std::string sym_name(reinterpret_cast<const char*>(&buf[buf_cnt + 1]), name_len);
+				buf_cnt += 1 + name_len;
+
+				u32 found_addr = 0;
+				u32 found_size = 0;
+				bool found = false;
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					const ccc::Symbol* sym = db.symbol_with_name(sym_name);
+					if (sym && sym->address().valid())
+					{
+						found      = true;
+						found_addr = sym->address().value;
+						found_size = sym->size();
+					}
+				});
+				if (!found)
+					goto error;
+
+				ToResultVector(ret_buffer, found_addr, ret_cnt); ret_cnt += 4;
+				ToResultVector(ret_buffer, found_size, ret_cnt); ret_cnt += 4;
+				break;
+			}
+			case MsgListGlobals:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 6, ret_cnt, 4 + 2 + MAX_SYMBOL_BATCH * MAX_SYMBOL_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 offset    = FromSpan<u32>(buf, buf_cnt);
+				const u16 max_count = FromSpan<u16>(buf, buf_cnt + 4);
+				buf_cnt += 6;
+
+				u32 total = 0;
+				std::vector<std::tuple<u32, u32, std::string>> globs; // addr, size, name
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					total = static_cast<u32>(db.global_variables.size());
+					u32 idx = 0;
+					for (const ccc::GlobalVariable& gv : db.global_variables)
+					{
+						if (idx++ < offset)
+							continue;
+						if (globs.size() >= max_count)
+							break;
+						globs.emplace_back(gv.address().get_or_zero(), gv.size(), gv.name());
+					}
+				});
+
+				ToResultVector(ret_buffer, total, ret_cnt);
+				ret_cnt += 4;
+				const u16 returned = static_cast<u16>(globs.size());
+				ToResultVector(ret_buffer, returned, ret_cnt);
+				ret_cnt += 2;
+				for (const auto& [gaddr, gsize, gname] : globs)
+				{
+					ToResultVector(ret_buffer, gaddr, ret_cnt); ret_cnt += 4;
+					ToResultVector(ret_buffer, gsize, ret_cnt); ret_cnt += 4;
+					const u8 name_len = static_cast<u8>(std::min(gname.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = name_len;
+					memcpy(&ret_buffer[ret_cnt], gname.c_str(), name_len);
+					ret_cnt += name_len;
+				}
+				break;
+			}
+			case MsgGetLocals:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 4 + MAX_LOCALS_RESPONSE * MAX_LOCAL_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 query_addr = FromSpan<u32>(buf, buf_cnt);
+				buf_cnt += 4;
+
+				struct LocalEntry { u8 storage_type; s32 value; std::string name; };
+				std::vector<LocalEntry> locals;
+
+				R5900SymbolGuardian.Read([&](const ccc::SymbolDatabase& db) {
+					const ccc::Function* func = db.functions.symbol_overlapping_address(query_addr);
+					if (!func)
+						return;
+
+					// Collect parameter variables
+					if (func->parameter_variables().has_value())
+					{
+						for (const auto& pv_handle : *func->parameter_variables())
+						{
+							const ccc::ParameterVariable* pv = db.parameter_variables.symbol_from_handle(pv_handle);
+							if (!pv)
+								continue;
+							LocalEntry e;
+							e.name = pv->name();
+							std::visit([&e](const auto& s) {
+								using T = std::decay_t<decltype(s)>;
+								if constexpr (std::is_same_v<T, ccc::RegisterStorage>)
+								{
+									e.storage_type = 1;
+									e.value = static_cast<s32>(s.dbx_register_number);
+								}
+								else if constexpr (std::is_same_v<T, ccc::StackStorage>)
+								{
+									e.storage_type = 2;
+									e.value = s.stack_pointer_offset;
+								}
+							}, pv->storage);
+							locals.push_back(std::move(e));
+						}
+					}
+
+					// Collect local variables
+					if (func->local_variables().has_value())
+					{
+						for (const auto& lv_handle : *func->local_variables())
+						{
+							const ccc::LocalVariable* lv = db.local_variables.symbol_from_handle(lv_handle);
+							if (!lv)
+								continue;
+							LocalEntry e;
+							e.name = lv->name();
+							std::visit([&e](const auto& s) {
+								using T = std::decay_t<decltype(s)>;
+								if constexpr (std::is_same_v<T, ccc::GlobalStorage>)
+								{
+									e.storage_type = 0;
+									e.value = 0;
+								}
+								else if constexpr (std::is_same_v<T, ccc::RegisterStorage>)
+								{
+									e.storage_type = 1;
+									e.value = static_cast<s32>(s.dbx_register_number);
+								}
+								else if constexpr (std::is_same_v<T, ccc::StackStorage>)
+								{
+									e.storage_type = 2;
+									e.value = s.stack_pointer_offset;
+								}
+							}, lv->storage);
+							locals.push_back(std::move(e));
+						}
+					}
+				});
+
+				if (locals.empty())
+					goto error;
+
+				const u32 count = static_cast<u32>(locals.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& loc : locals)
+				{
+					ret_buffer[ret_cnt++] = loc.storage_type;
+					ToResultVector(ret_buffer, loc.value, ret_cnt); ret_cnt += 4;
+					const u8 name_len = static_cast<u8>(std::min(loc.name.size(), static_cast<size_t>(255)));
+					ret_buffer[ret_cnt++] = name_len;
+					memcpy(&ret_buffer[ret_cnt], loc.name.c_str(), name_len);
+					ret_cnt += name_len;
+				}
 				break;
 			}
 			default:
