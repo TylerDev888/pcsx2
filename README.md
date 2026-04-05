@@ -69,6 +69,17 @@ The PINE protocol had no way for external tools to control execution or inspect 
 | `0x2C` | `MsgListGlobals` | Paginated list of EE global variables (same format as `MsgListFunctions`) |
 | `0x2D` | `MsgGetLocals` | List parameters and locals for the function containing a given EE address |
 
+### Memory Watches
+| Opcode | Name | Args |
+|--------|------|------|
+| `0x2E` | `MsgAddWatch` | `cpu(u8)`, `start(u32)`, `end(u32, exclusive)`, `cond(u8)` |
+| `0x2F` | `MsgRemoveWatch` | `cpu(u8)`, `start(u32)`, `end(u32)` |
+| `0x30` | `MsgListWatches` | `cpu_sel(u8)` — `0`=EE, `1`=IOP, `0xFF`=both |
+| `0x31` | `MsgClearAllWatches` | *(none)* |
+
+`cond` bitmask: `0x01`=read, `0x02`=write, `0x03`=read+write. Watchpoints always use `MEMCHECK_BREAK` (pause on hit).
+
+
 
 ![Windows Build Status](https://img.shields.io/github/actions/workflow/status/PCSX2/pcsx2/windows_build_matrix.yml?label=%F0%9F%96%A5%EF%B8%8F%20Windows%20Builds)
 ![Linux Build Status](https://img.shields.io/github/actions/workflow/status/PCSX2/pcsx2/linux_build_matrix.yml?label=%F0%9F%90%A7%20Linux%20Builds)
