@@ -91,6 +91,15 @@ opcodes makes PINE a self-contained debugger transport.
 | 0x2C  | `MsgListGlobals`    | Paginated list of EE global variables                      |
 | 0x2D  | `MsgGetLocals`      | List locals and parameters for the function at an address  |
 
+### Memory watchpoints (0x2E–0x31)
+
+| Value | Name                 | Purpose                                                      |
+|-------|----------------------|--------------------------------------------------------------|
+| 0x2E  | `MsgAddWatch`        | Add a memory watchpoint that breaks on read, write, or both  |
+| 0x2F  | `MsgRemoveWatch`     | Remove a memory watchpoint by address range                  |
+| 0x30  | `MsgListWatches`     | List all active memory watchpoints                           |
+| 0x31  | `MsgClearAllWatches` | Remove all memory watchpoints                                |
+
 ---
 
 ## Packet Formats
@@ -448,9 +457,73 @@ all of its parameters and local variables with their storage locations.
 
 ---
 
-## Batch Mode
+### MsgAddWatch (0x2E)
 
-All opcodes 0x10–0x2D are **single-command only** — they must not appear inside a
+Registers a memory watchpoint that breaks execution when the specified address range is
+accessed. Watchpoints are only effective in JIT mode; they have no effect under the
+interpreter or HLE. The result mode is always `BREAK` (pause execution on hit).
+
+- **Request:** 15 bytes — opcode, `cpu` (u8), `start` (u32LE), `end` (u32LE), `cond` (u8).
+  - `cpu`: `0` = EE (R5900), `1` = IOP (R3000).
+  - `start`: first byte of the watched range (inclusive).
+  - `end`: first byte *past* the watched range (exclusive); must be greater than `start`.
+  - `cond`: bitmask — `0x01` = break on read, `0x02` = break on write, `0x03` = break on
+    read or write.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if `cpu` is out of range, `cond` is zero or
+  contains undefined bits, `end <= start`, or no valid VM is active.
+
+**Example — watch writes to 0x00203000..0x00203003 on EE:**
+```
+Request:  [0x0F 0x00 0x00 0x00]  [0x2E]  [0x00]  [0x00 0x30 0x20 0x00]  [0x04 0x30 0x20 0x00]  [0x02]
+Reply OK: [0x05 0x00 0x00 0x00]  [0x00]
+```
+
+---
+
+### MsgRemoveWatch (0x2F)
+
+Removes a previously registered memory watchpoint. The address range must match the
+range used when the watchpoint was added.
+
+- **Request:** 14 bytes — opcode, `cpu` (u8), `start` (u32LE), `end` (u32LE).
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no matching watchpoint exists, `cpu` is out
+  of range, `end <= start`, or no valid VM is active.
+
+---
+
+### MsgListWatches (0x30)
+
+Returns all active memory watchpoints, optionally filtered by CPU.
+
+- **Request:** 6 bytes — opcode, `cpu_sel` (u8).
+  - `cpu_sel`: `0` = EE only, `1` = IOP only, `0xFF` = both.
+- **Reply (OK):** variable — `IPC_OK`, `count` (u32LE), then for each watchpoint:
+
+  ```
+  start  : u32LE  — first byte of the watched range (inclusive)
+  end    : u32LE  — first byte past the watched range (exclusive)
+  cond   : u8     — condition bitmask (0x01=read, 0x02=write, 0x03=read+write)
+  result : u8     — action bitmask (0x01=log, 0x02=break, 0x03=both)
+  cpu    : u8     — 0=EE, 1=IOP
+  ```
+
+- **Reply (fail):** 5 bytes — `IPC_FAIL`.
+
+---
+
+### MsgClearAllWatches (0x31)
+
+Removes all active memory watchpoints on both CPUs.
+
+- **Request:** 5 bytes — opcode only.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM is active.
+
+---
+
+All opcodes 0x10–0x31 are **single-command only** — they must not appear inside a
 multi-command batch request. If any of them is encountered after another command
 has already been processed in the same request buffer, the server returns `IPC_FAIL`
 for the entire batch. This restriction exists because these opcodes mutate or observe
@@ -513,3 +586,13 @@ current PC.
 - [ ] `MsgGetLocals` returns parameters and locals for a function with DWARF debug info
 - [ ] `MsgGetLocals` returns `IPC_FAIL` for an address outside any function
 - [ ] All opcodes 0x10–0x2D return `IPC_FAIL` gracefully when called inside a batch
+- [ ] `MsgAddWatch(0, start, end, 0x02)` adds a write watchpoint on EE; writing to the range pauses the emulator
+- [ ] `MsgAddWatch(0, start, end, 0x01)` adds a read watchpoint; reading the range pauses the emulator
+- [ ] `MsgAddWatch` returns `IPC_FAIL` for invalid `cond` (0 or bits outside 0x03)
+- [ ] `MsgAddWatch` returns `IPC_FAIL` when `end <= start`
+- [ ] `MsgRemoveWatch` removes the matching watchpoint; subsequent list no longer contains it
+- [ ] `MsgRemoveWatch` returns `IPC_FAIL` for an address range that has no watchpoint
+- [ ] `MsgListWatches(0xFF)` returns watchpoints from both EE and IOP
+- [ ] `MsgListWatches(0)` returns only EE watchpoints
+- [ ] `MsgClearAllWatches` removes all watchpoints; `MsgListWatches` returns count=0
+- [ ] All opcodes 0x10–0x31 return `IPC_FAIL` gracefully when called inside a batch
