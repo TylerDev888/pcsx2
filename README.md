@@ -69,8 +69,6 @@ The PINE protocol had no way for external tools to control execution or inspect 
 | `0x2C` | `MsgListGlobals` | Paginated list of EE global variables (same format as `MsgListFunctions`) |
 | `0x2D` | `MsgGetLocals` | List parameters and locals for the function containing a given EE address |
 
-provide
-
 
 ![Windows Build Status](https://img.shields.io/github/actions/workflow/status/PCSX2/pcsx2/windows_build_matrix.yml?label=%F0%9F%96%A5%EF%B8%8F%20Windows%20Builds)
 ![Linux Build Status](https://img.shields.io/github/actions/workflow/status/PCSX2/pcsx2/linux_build_matrix.yml?label=%F0%9F%90%A7%20Linux%20Builds)
