@@ -1692,7 +1692,7 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				if (cpu_sel > 1)
 					goto error;
 				if (cond_raw == 0 || (cond_raw & ~static_cast<u8>(MEMCHECK_READWRITE)) != 0)
-					goto error;
+					goto error; // cond must be 0x01 (read), 0x02 (write), or 0x03 (read+write)
 				if (end <= start)
 					goto error;
 
