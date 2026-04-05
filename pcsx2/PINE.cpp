@@ -202,6 +202,10 @@ namespace PINEServer
 		MsgGetSymbolByName     = 0x2B, /**< Look up any EE symbol by name → address. */
 		MsgListGlobals         = 0x2C, /**< Paginated list of EE global variables. */
 		MsgGetLocals           = 0x2D, /**< List locals/params for the function containing an EE address. */
+		MsgAddWatch            = 0x2E, /**< Add a memory watchpoint (cpu, start, end, condition). */
+		MsgRemoveWatch         = 0x2F, /**< Remove a memory watchpoint (cpu, start, end). */
+		MsgListWatches         = 0x30, /**< List all active memory watchpoints. */
+		MsgClearAllWatches     = 0x31, /**< Clear all memory watchpoints. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -629,6 +633,9 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 	// Locals: storage_type(1) + value(4) + name_len(1) + name(255 max) = 261 bytes each
 	static constexpr int MAX_LOCALS_RESPONSE       = 512;
 	static constexpr int MAX_LOCAL_ENTRY_SIZE      = 1 + 4 + 1 + 255;
+	// Watches: start(4) + end(4) + cond(1) + result(1) + cpu(1) = 11 bytes each
+	static constexpr int MAX_WATCHES_RESPONSE      = 10000;
+	static constexpr int WATCH_ENTRY_SIZE          = 4 + 4 + 1 + 1 + 1;
 
 	u32 ret_cnt = 5;
 	u32 buf_cnt = 0;
@@ -1666,6 +1673,119 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 					memcpy(&ret_buffer[ret_cnt], loc.name.c_str(), name_len);
 					ret_cnt += name_len;
 				}
+				break;
+			}
+			case MsgAddWatch:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				// cpu(1) + start(4) + end(4) + cond(1) = 10 bytes
+				if (!SafetyChecks(buf_cnt, 10, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8  cpu_sel  = FromSpan<u8>(buf, buf_cnt);
+				const u32 start    = FromSpan<u32>(buf, buf_cnt + 1);
+				const u32 end      = FromSpan<u32>(buf, buf_cnt + 5);
+				const u8  cond_raw = FromSpan<u8>(buf, buf_cnt + 9);
+				buf_cnt += 10;
+
+				if (cpu_sel > 1)
+					goto error;
+				if (cond_raw == 0 || (cond_raw & ~static_cast<u8>(MEMCHECK_READWRITE)) != 0)
+					goto error; // cond must be 0x01 (read), 0x02 (write), or 0x03 (read+write)
+				if (end <= start)
+					goto error;
+
+				const BreakPointCpu cpu  = (cpu_sel == 0) ? BREAKPOINT_EE : BREAKPOINT_IOP;
+				const auto          cond = static_cast<MemCheckCondition>(cond_raw);
+				Host::RunOnCPUThread([cpu, start, end, cond]() {
+					CBreakPoints::AddMemCheck(cpu, start, end, cond, MEMCHECK_BREAK);
+				}, true);
+				break;
+			}
+			case MsgRemoveWatch:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				// cpu(1) + start(4) + end(4) = 9 bytes
+				if (!SafetyChecks(buf_cnt, 9, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8  cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				const u32 start   = FromSpan<u32>(buf, buf_cnt + 1);
+				const u32 end     = FromSpan<u32>(buf, buf_cnt + 5);
+				buf_cnt += 9;
+
+				if (cpu_sel > 1)
+					goto error;
+				if (end <= start)
+					goto error;
+
+				const BreakPointCpu cpu = (cpu_sel == 0) ? BREAKPOINT_EE : BREAKPOINT_IOP;
+				bool found = false;
+				Host::RunOnCPUThread([cpu, start, end, &found]() {
+					const auto checks = CBreakPoints::GetMemChecks(cpu);
+					for (const auto& mc : checks)
+					{
+						if (mc.start == start && mc.end == end)
+						{
+							found = true;
+							break;
+						}
+					}
+					if (found)
+						CBreakPoints::RemoveMemCheck(cpu, start, end);
+				}, true);
+				if (!found)
+					goto error;
+				break;
+			}
+			case MsgListWatches:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				// cpu_sel(1); reply: count(4) + up to MAX_WATCHES_RESPONSE × WATCH_ENTRY_SIZE
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 4 + MAX_WATCHES_RESPONSE * WATCH_ENTRY_SIZE, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu_sel = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+
+				std::vector<MemCheck> watches;
+				Host::RunOnCPUThread([&]() {
+					if (cpu_sel == 0 || cpu_sel == 0xFF)
+					{
+						auto ee = CBreakPoints::GetMemChecks(BREAKPOINT_EE);
+						watches.insert(watches.end(), ee.begin(), ee.end());
+					}
+					if (cpu_sel == 1 || cpu_sel == 0xFF)
+					{
+						auto iop = CBreakPoints::GetMemChecks(BREAKPOINT_IOP);
+						watches.insert(watches.end(), iop.begin(), iop.end());
+					}
+				}, true);
+
+				const u32 count = static_cast<u32>(watches.size());
+				ToResultVector(ret_buffer, count, ret_cnt);
+				ret_cnt += 4;
+				for (const auto& w : watches)
+				{
+					ToResultVector(ret_buffer, w.start, ret_cnt);         ret_cnt += 4;
+					ToResultVector(ret_buffer, w.end, ret_cnt);           ret_cnt += 4;
+					ret_buffer[ret_cnt++] = static_cast<u8>(w.memCond);
+					ret_buffer[ret_cnt++] = static_cast<u8>(w.result);
+					ret_buffer[ret_cnt++] = static_cast<u8>(w.cpu);
+				}
+				break;
+			}
+			case MsgClearAllWatches:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				Host::RunOnCPUThread([]() { CBreakPoints::ClearAllMemChecks(); }, true);
 				break;
 			}
 			default:
