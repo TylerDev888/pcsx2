@@ -25,9 +25,6 @@
     <ClCompile Include="emitter\legacy_sse.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="emitter\avx.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="emitter\movs.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

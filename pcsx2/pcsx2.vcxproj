@@ -59,6 +59,8 @@
       <AdditionalIncludeDirectories Condition="'$(Platform)'=='ARM64'">%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\vixl\include</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\demangler\include</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\ccc\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\rapidyaml\src</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\rapidyaml\ext\c4core\src</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>PrecompiledHeader.h</PrecompiledHeaderFile>
       <ForcedIncludeFiles>PrecompiledHeader.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
@@ -1002,6 +1004,9 @@
     </ProjectReference>
     <ProjectReference Include="..\3rdparty\rainterface\rainterface.vcxproj" Condition="'$(Platform)'=='x64'">
       <Project>{95dd0a0c-d14d-4cff-a593-820ef26efcc8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\3rdparty\rapidyaml\rapidyaml.vcxproj">
+      <Project>{b45e2ca5-1b73-4b5c-9b7f-2d3a1c9e4f08}</Project>
     </ProjectReference>
     <ProjectReference Include="..\3rdparty\rcheevos\rcheevos.vcxproj">
       <Project>{6d5b5ad9-1525-459b-939f-a5e1082af6b3}</Project>
