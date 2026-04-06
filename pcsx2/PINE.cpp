@@ -12,6 +12,8 @@
 #include "DebugTools/Breakpoints.h"
 #include "DebugTools/MIPSAnalyst.h"
 #include "DebugTools/MipsStackWalk.h"
+#include "GS/GS.h"
+#include "MTGS.h"
 #include "R5900.h"
 #include "common/Error.h"
 #include "common/Threading.h"
@@ -206,6 +208,7 @@ namespace PINEServer
 		MsgRemoveWatch         = 0x2F, /**< Remove a memory watchpoint (cpu, start, end). */
 		MsgListWatches         = 0x30, /**< List all active memory watchpoints. */
 		MsgClearAllWatches     = 0x31, /**< Clear all memory watchpoints. */
+		MsgSaveSnapshot        = 0x32, /**< Save a screenshot of the current game frame to disk. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -1786,6 +1789,16 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 					goto error;
 
 				Host::RunOnCPUThread([]() { CBreakPoints::ClearAllMemChecks(); }, true);
+				break;
+			}
+			case MsgSaveSnapshot:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				MTGS::RunOnGSThread([]() { GSQueueSnapshot(std::string(), 0); });
 				break;
 			}
 			default:
