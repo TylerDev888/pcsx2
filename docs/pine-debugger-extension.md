@@ -2,12 +2,13 @@
 
 ## Summary
 
-This proposal extends the PINE IPC protocol with opcodes 0x10–0x2D that expose the
+This proposal extends the PINE IPC protocol with opcodes 0x10–0x32 that expose the
 complete PCSX2 GUI debugger interface to external tools. The additions allow a remote
 client to control execution, manage save states by name, inspect all registers across
 both CPUs, enumerate threads, modules, and call stacks, list and look up EE function
-symbols and global variables, retrieve local variables and function parameters, and
-disassemble instruction ranges — all through the existing PINE socket.
+symbols and global variables, retrieve local variables and function parameters,
+disassemble instruction ranges, and save game screenshots — all through the existing
+PINE socket.
 
 All new opcodes are numbered above 0x0F, so no existing opcode values change and
 clients that do not use the new opcodes are completely unaffected.
@@ -99,6 +100,12 @@ opcodes makes PINE a self-contained debugger transport.
 | 0x2F  | `MsgRemoveWatch`     | Remove a memory watchpoint by address range                  |
 | 0x30  | `MsgListWatches`     | List all active memory watchpoints                           |
 | 0x31  | `MsgClearAllWatches` | Remove all memory watchpoints                                |
+
+### Screenshot (0x32)
+
+| Value | Name               | Purpose                                      |
+|-------|--------------------|----------------------------------------------|
+| 0x32  | `MsgSaveSnapshot`  | Save a screenshot of the current game frame  |
 
 ---
 
@@ -523,7 +530,19 @@ Removes all active memory watchpoints on both CPUs.
 
 ---
 
-All opcodes 0x10–0x31 are **single-command only** — they must not appear inside a
+### MsgSaveSnapshot (0x32)
+
+Queues a screenshot of the current game frame. The image is saved to the configured
+snapshots directory (same as the in-game screenshot hotkey). The filename and format
+(PNG, JPEG, or WebP) follow the `Screenshots` settings in the PCSX2 configuration.
+
+- **Request:** 5 bytes — opcode only.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM is active.
+
+---
+
+All opcodes 0x10–0x32 are **single-command only** — they must not appear inside a
 multi-command batch request. If any of them is encountered after another command
 has already been processed in the same request buffer, the server returns `IPC_FAIL`
 for the entire batch. This restriction exists because these opcodes mutate or observe
@@ -595,4 +614,6 @@ current PC.
 - [ ] `MsgListWatches(0xFF)` returns watchpoints from both EE and IOP
 - [ ] `MsgListWatches(0)` returns only EE watchpoints
 - [ ] `MsgClearAllWatches` removes all watchpoints; `MsgListWatches` returns count=0
-- [ ] All opcodes 0x10–0x31 return `IPC_FAIL` gracefully when called inside a batch
+- [ ] `MsgSaveSnapshot` queues a screenshot; a file appears in the snapshots directory
+- [ ] `MsgSaveSnapshot` returns `IPC_FAIL` when no game is running
+- [ ] All opcodes 0x10–0x32 return `IPC_FAIL` gracefully when called inside a batch
