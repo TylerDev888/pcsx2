@@ -500,13 +500,12 @@ bool PINEServer::AcceptClient()
 	{
 		// Gross C-style cast, but SOCKET is a handle on Windows.
 		Console.WriteLn("PINE: New client with FD %d connected.", (int)s_msgsock);
+#ifdef __APPLE__
+		int nosigpipe = 1;
+		setsockopt(s_msgsock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
 		return true;
 	}
-
-#ifdef __APPLE__
-	int nosigpipe = 1;
-	setsockopt(s_msgsock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
-#endif
 
 	// everything else is non recoverable in our scope
 	// we also mark as recoverable socket errors where it would block a
@@ -646,7 +645,10 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 	while (buf_cnt < buf_size)
 	{
 		if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+		{
+			Console.Error("PINE: Safety check failed reading opcode at buffer offset %u (buf_size=%u).", buf_cnt, buf_size);
 			return IPCBuffer{5, MakeFailIPC(ret_buffer)};
+		}
 		buf_cnt++;
 		// example IPC messages: MsgRead/Write
 		// refer to the client doc for more info on the format
@@ -1804,6 +1806,10 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			default:
 			{
 			error:
+				Console.Error("PINE: IPC command 0x%02X failed at buffer offset %u (buf_size=%u). "
+				              "The emulator may have no game loaded, the buffer may be malformed, "
+				              "or the opcode is unrecognised.",
+				              buf_cnt > 0 ? (unsigned)buf[buf_cnt - 1] : 0xFFu, buf_cnt, buf_size);
 				return IPCBuffer{5, MakeFailIPC(ret_buffer)};
 			}
 		}
