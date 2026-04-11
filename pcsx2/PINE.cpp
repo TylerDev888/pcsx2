@@ -15,6 +15,9 @@
 #include "GS/GS.h"
 #include "MTGS.h"
 #include "R5900.h"
+#include "SIO/Pad/Pad.h"
+#include "SIO/Pad/PadBase.h"
+#include "SIO/Pad/PadDualshock2.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
@@ -209,6 +212,11 @@ namespace PINEServer
 		MsgListWatches         = 0x30, /**< List all active memory watchpoints. */
 		MsgClearAllWatches     = 0x31, /**< Clear all memory watchpoints. */
 		MsgSaveSnapshot        = 0x32, /**< Save a screenshot of the current game frame to disk. */
+		MsgPadGetState         = 0x33, /**< Read full pad state (buttons, analogs, pressures). */
+		MsgPadSetButton        = 0x34, /**< Set a single button on a pad by index and value. */
+		MsgPadSetAnalog        = 0x35, /**< Set analog stick positions on a pad directly. */
+		MsgPadSetState         = 0x36, /**< Set the complete pad state in one message. */
+		MsgPadGetType          = 0x37, /**< Query the controller type of a pad slot. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -1801,6 +1809,151 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 					goto error;
 
 				MTGS::RunOnGSThread([]() { GSQueueSnapshot(std::string(), 0); });
+				break;
+			}
+			case MsgPadGetState:
+			{
+				// Request:  pad (u8)
+				// Reply OK: buttons (u32 LE) + lx ly rx ry (4 × u8) + pressures[16] (16 × u8) = 24 bytes
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 4 + 4 + 16, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 pad_slot = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (pad_slot >= Pad::NUM_CONTROLLER_PORTS)
+					goto error;
+
+				PadBase* pad = Pad::GetPad(pad_slot);
+				if (!pad || pad->GetType() == Pad::ControllerType::NotConnected)
+					goto error;
+
+				{
+					const u32 buttons = pad->GetButtons();
+					ToResultVector(ret_buffer, buttons, ret_cnt);
+					ret_cnt += 4;
+
+					const auto [lx, ly] = pad->GetRawLeftAnalog();
+					const auto [rx, ry] = pad->GetRawRightAnalog();
+					ret_buffer[ret_cnt++] = lx;
+					ret_buffer[ret_cnt++] = ly;
+					ret_buffer[ret_cnt++] = rx;
+					ret_buffer[ret_cnt++] = ry;
+
+					// Pressure values for buttons 0–15 (PAD_UP through PAD_R3).
+					for (u32 i = 0; i < 16; i++)
+					{
+						ret_buffer[ret_cnt++] = pad->GetPressure(i);
+					}
+				}
+				break;
+			}
+			case MsgPadSetButton:
+			{
+				// Request: pad (u8) + button_index (u8) + value (f32 LE)
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + 1 + 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 pad_slot    = FromSpan<u8>(buf, buf_cnt);
+				const u8 button      = FromSpan<u8>(buf, buf_cnt + 1);
+				const float value    = std::clamp(FromSpan<float>(buf, buf_cnt + 2), 0.0f, 1.0f);
+				buf_cnt += 1 + 1 + 4;
+
+				if (pad_slot >= Pad::NUM_CONTROLLER_PORTS)
+					goto error;
+				if (button >= PadDualshock2::Inputs::LENGTH)
+					goto error;
+
+				Pad::SetControllerState(pad_slot, button, value);
+				break;
+			}
+			case MsgPadSetAnalog:
+			{
+				// Request: pad (u8) + lx (u8) + ly (u8) + rx (u8) + ry (u8)
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 pad_slot = FromSpan<u8>(buf, buf_cnt);
+				const u8 lx       = FromSpan<u8>(buf, buf_cnt + 1);
+				const u8 ly       = FromSpan<u8>(buf, buf_cnt + 2);
+				const u8 rx       = FromSpan<u8>(buf, buf_cnt + 3);
+				const u8 ry       = FromSpan<u8>(buf, buf_cnt + 4);
+				buf_cnt += 1 + 4;
+
+				if (pad_slot >= Pad::NUM_CONTROLLER_PORTS)
+					goto error;
+
+				{
+					PadBase* pad = Pad::GetPad(pad_slot);
+					if (!pad || pad->GetType() == Pad::ControllerType::NotConnected)
+						goto error;
+					pad->SetRawAnalogs({lx, ly}, {rx, ry});
+				}
+				break;
+			}
+			case MsgPadSetState:
+			{
+				// Request: pad (u8) + buttons (u32 LE) + lx ly rx ry (4 × u8) + pressures[16] (16 × u8)
+				// Total args: 1 + 4 + 4 + 16 = 25 bytes
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + 4 + 4 + 16, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 pad_slot = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (pad_slot >= Pad::NUM_CONTROLLER_PORTS)
+					goto error;
+
+				{
+					PadBase* pad = Pad::GetPad(pad_slot);
+					if (!pad || pad->GetType() == Pad::ControllerType::NotConnected)
+						goto error;
+
+					const u8 lx = FromSpan<u8>(buf, buf_cnt + 4);
+					const u8 ly = FromSpan<u8>(buf, buf_cnt + 5);
+					const u8 rx = FromSpan<u8>(buf, buf_cnt + 6);
+					const u8 ry = FromSpan<u8>(buf, buf_cnt + 7);
+					pad->SetRawAnalogs({lx, ly}, {rx, ry});
+
+					// buttons bitmask: bit clear means pressed (PS2 convention).
+					// We derive pressed state and pressure from the payload rather than
+					// the bitmask, matching PadData::OverrideActualController().
+					for (u32 i = 0; i < 16; i++)
+					{
+						const u8 pressure = FromSpan<u8>(buf, buf_cnt + 8 + i);
+						// A button is considered pressed when pressure > 0.
+						pad->SetRawPressureButton(i, {pressure > 0, pressure});
+					}
+					buf_cnt += 4 + 4 + 16;
+				}
+				break;
+			}
+			case MsgPadGetType:
+			{
+				// Request:  pad (u8)
+				// Reply OK: controller_type (u8)
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 1, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 pad_slot = FromSpan<u8>(buf, buf_cnt);
+				buf_cnt += 1;
+				if (pad_slot >= Pad::NUM_CONTROLLER_PORTS)
+					goto error;
+
+				{
+					PadBase* pad = Pad::GetPad(pad_slot);
+					if (!pad)
+						goto error;
+					ret_buffer[ret_cnt++] = static_cast<u8>(pad->GetType());
+				}
 				break;
 			}
 			default:

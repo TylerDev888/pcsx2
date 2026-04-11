@@ -107,6 +107,16 @@ opcodes makes PINE a self-contained debugger transport.
 |-------|--------------------|----------------------------------------------|
 | 0x32  | `MsgSaveSnapshot`  | Save a screenshot of the current game frame  |
 
+### Pad/Controller input (0x33–0x37)
+
+| Value | Name               | Purpose                                                |
+|-------|--------------------|--------------------------------------------------------|
+| 0x33  | `MsgPadGetState`   | Read full pad state (buttons, analogs, pressures)      |
+| 0x34  | `MsgPadSetButton`  | Set a single button by index and normalized value      |
+| 0x35  | `MsgPadSetAnalog`  | Set analog stick positions directly (raw 0–255)        |
+| 0x36  | `MsgPadSetState`   | Set the complete pad state in one message (bulk write) |
+| 0x37  | `MsgPadGetType`    | Query the controller type of a pad slot                |
+
 ---
 
 ## Packet Formats
@@ -542,6 +552,92 @@ snapshots directory (same as the in-game screenshot hotkey). The filename and fo
 
 ---
 
+### MsgPadGetState (0x33)
+
+Read the full input state of one pad slot, including the button bitmask, analog stick
+positions, and per-button pressure values.
+
+- **Request:** 6 bytes — opcode + `pad` (u8, unified slot 0–7).
+- **Reply (OK):** 29 bytes:
+  - `IPC_OK` (1 byte)
+  - `buttons` (u32 LE) — PS2 button bitmask; a bit that is **clear** means the
+    corresponding button is **pressed** (PS2 hardware convention).
+  - `lx` (u8) — left stick X axis, 0–255, 0x7F = centred.
+  - `ly` (u8) — left stick Y axis, 0–255, 0x7F = centred.
+  - `rx` (u8) — right stick X axis, 0–255, 0x7F = centred.
+  - `ry` (u8) — right stick Y axis, 0–255, 0x7F = centred.
+  - `pressures[16]` (16 × u8) — pressure values (0–255) for inputs 0–15
+    in `PadDualshock2::Inputs` order: PAD_UP, PAD_RIGHT, PAD_DOWN, PAD_LEFT,
+    PAD_TRIANGLE, PAD_CIRCLE, PAD_CROSS, PAD_SQUARE, PAD_SELECT, PAD_START,
+    PAD_L1, PAD_L2, PAD_R1, PAD_R2, PAD_L3, PAD_R3.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM, slot is out of range, or
+  the slot has no connected controller.
+
+### MsgPadSetButton (0x34)
+
+Set a single button (or analog axis) on a pad to a normalized value. The value goes
+through the full deadzone and pressure pipeline just like a physical input.
+
+- **Request:** 11 bytes — opcode + `pad` (u8) + `button_index` (u8) + `value` (f32 LE).
+  - `pad` — unified slot 0–7.
+  - `button_index` — index in `PadDualshock2::Inputs` (0–25; see table above).
+  - `value` — 0.0 = fully released, 1.0 = fully pressed. Clamped to [0.0, 1.0].
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM, slot is out of range, or
+  the button index is ≥ `PadDualshock2::Inputs::LENGTH` (26).
+
+### MsgPadSetAnalog (0x35)
+
+Set the raw analog stick positions on a pad, bypassing deadzone processing. Useful
+for precise remote control where the client manages its own deadzone logic.
+
+- **Request:** 10 bytes — opcode + `pad` (u8) + `lx` (u8) + `ly` (u8) + `rx` (u8)
+  + `ry` (u8).
+  - `lx`/`ly` — left stick X and Y, 0–255, 0x7F = centred.
+  - `rx`/`ry` — right stick X and Y, 0–255, 0x7F = centred.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM, slot is out of range, or
+  the slot has no connected controller.
+
+### MsgPadSetState (0x36)
+
+Atomically replace the complete input state of one pad in a single message. Suitable
+for TAS playback or any use case that needs to update the entire controller state at
+once.
+
+- **Request:** 30 bytes — opcode + `pad` (u8) + payload:
+  - `buttons` (u32 LE) — reserved field (not applied directly; button state is
+    derived from the pressure array below).
+  - `lx` (u8) + `ly` (u8) + `rx` (u8) + `ry` (u8) — analog stick positions.
+  - `pressures[16]` (16 × u8) — pressure per button in `PadDualshock2::Inputs`
+    order (same order as `MsgPadGetState`). A pressure of 0 means released; any
+    non-zero value means pressed with that pressure.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM, slot is out of range, or
+  the slot has no connected controller.
+
+### MsgPadGetType (0x37)
+
+Query the controller type installed in a pad slot.
+
+- **Request:** 6 bytes — opcode + `pad` (u8, unified slot 0–7).
+- **Reply (OK):** 6 bytes — `IPC_OK` + `controller_type` (u8).
+
+`controller_type` values (`Pad::ControllerType` enum):
+
+| Value | Meaning        |
+|-------|----------------|
+| 0     | NotConnected   |
+| 1     | DualShock2     |
+| 2     | Guitar         |
+| 3     | Jogcon         |
+| 4     | Negcon         |
+| 5     | Popn           |
+
+- **Reply (fail):** 5 bytes — `IPC_FAIL` if no valid VM or slot is out of range.
+
+---
+
 All opcodes 0x10–0x32 are **single-command only** — they must not appear inside a
 multi-command batch request. If any of them is encountered after another command
 has already been processed in the same request buffer, the server returns `IPC_FAIL`
@@ -617,3 +713,15 @@ current PC.
 - [ ] `MsgSaveSnapshot` queues a screenshot; a file appears in the snapshots directory
 - [ ] `MsgSaveSnapshot` returns `IPC_FAIL` when no game is running
 - [ ] All opcodes 0x10–0x32 return `IPC_FAIL` gracefully when called inside a batch
+- [ ] `MsgPadGetState(0)` returns buttons, analogs, and pressures for pad 0
+- [ ] `MsgPadGetState` returns `IPC_FAIL` for an out-of-range slot or disconnected pad
+- [ ] `MsgPadSetButton(0, 6, 1.0)` presses Cross on pad 0; the game sees the button held
+- [ ] `MsgPadSetButton(0, 6, 0.0)` releases Cross; the game sees the button released
+- [ ] `MsgPadSetButton` returns `IPC_FAIL` for an invalid pad slot or button index
+- [ ] `MsgPadSetAnalog(0, 0xFF, 0x7F, 0x7F, 0x7F)` pushes the left stick fully right
+- [ ] `MsgPadSetAnalog` returns `IPC_FAIL` for an out-of-range pad slot
+- [ ] `MsgPadSetState(0, ...)` sets buttons, analogs, and pressures atomically
+- [ ] `MsgPadSetState` returns `IPC_FAIL` for an out-of-range or disconnected pad
+- [ ] `MsgPadGetType(0)` returns `0x01` for a DualShock2 controller
+- [ ] `MsgPadGetType(0)` returns `0x00` when no controller is connected
+- [ ] `MsgPadGetType` returns `IPC_FAIL` for an out-of-range slot
