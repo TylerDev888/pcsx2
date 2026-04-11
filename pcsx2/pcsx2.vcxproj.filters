@@ -965,6 +965,9 @@
     <ClCompile Include="DEV9\net.cpp">
       <Filter>System\Ps2\DEV9</Filter>
     </ClCompile>
+    <ClCompile Include="DEV9\NetCapture.cpp">
+      <Filter>System\Ps2\DEV9</Filter>
+    </ClCompile>
     <ClCompile Include="DEV9\Win32\tap-win32.cpp">
       <Filter>System\Ps2\DEV9</Filter>
     </ClCompile>
@@ -1779,6 +1782,9 @@
       <Filter>System\Ps2\DEV9\InternalServers</Filter>
     </ClInclude>
     <ClInclude Include="DEV9\net.h">
+      <Filter>System\Ps2\DEV9</Filter>
+    </ClInclude>
+    <ClInclude Include="DEV9\NetCapture.h">
       <Filter>System\Ps2\DEV9</Filter>
     </ClInclude>
     <ClInclude Include="DEV9\PacketReader\ARP\ARP_Packet.h">
