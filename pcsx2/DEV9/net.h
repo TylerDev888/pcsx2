@@ -77,6 +77,26 @@ constexpr enum AdapterOptions operator&(const enum AdapterOptions selfValue, con
 	return static_cast<enum AdapterOptions>(static_cast<int>(selfValue) & static_cast<int>(inValue));
 }
 
+/// Status snapshot returned by NetGetAdapterStatus().
+struct NetAdapterStatus
+{
+	bool enabled;                           ///< true if EthEnable and adapter is open
+	int apiType;                            ///< Pcsx2Config::DEV9Options::NetApi cast to int
+	PacketReader::MAC_Address ps2MAC;       ///< PS2 MAC address (zeroed if not active)
+	PacketReader::IP::IP_Address ps2IP;     ///< Last known PS2 IP (zeroed until a packet is seen)
+};
+
+/// Return a snapshot of the current DEV9 adapter status.
+NetAdapterStatus NetGetAdapterStatus();
+
+/// Inject a raw Ethernet frame into the PS2 RX FIFO.
+/// @returns false if the adapter is not initialised or the RX FIFO is full.
+bool NetInjectRx(const u8* data, int size);
+
+/// Inject a raw Ethernet frame out through the TX adapter (as if the PS2 sent it).
+/// @returns false if the adapter is not initialised.
+bool NetInjectTx(const u8* data, int size);
+
 class NetAdapter
 {
 public:
@@ -116,6 +136,9 @@ public:
 	virtual void close(){};
 	virtual ~NetAdapter();
 
+	PacketReader::MAC_Address GetPS2MAC() const { return ps2MAC; }
+	PacketReader::IP::IP_Address GetPS2IP() const { return ps2IP; }
+
 protected:
 	void SetMACAddress(PacketReader::MAC_Address* mac);
 	bool VerifyPkt(NetPacket* pkt, int read_size);
@@ -141,6 +164,9 @@ private:
 
 void tx_put(NetPacket* ptr);
 void ad_reset();
+
+/// Global pointer to the active network adapter (nullptr when DEV9 is closed).
+extern NetAdapter* nif;
 
 void InitNet();
 void ReconfigureLiveNet(const Pcsx2Config& old_config);

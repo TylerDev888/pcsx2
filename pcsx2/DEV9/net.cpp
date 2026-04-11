@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include <chrono>
+#include <cstring>
 #include <thread>
 #include <mutex>
 #if defined(__POSIX__)
@@ -10,6 +11,7 @@
 
 #include "net.h"
 #include "DEV9.h"
+#include "NetCapture.h"
 #ifdef _WIN32
 #include "Win32/tap.h"
 #endif
@@ -37,7 +39,10 @@ void NetRxThread()
 			std::lock_guard rx_lock(rx_mutex);
 			//Check if we can still rx
 			if (rx_fifo_can_rx())
+			{
 				rx_process(&tmp);
+				DEV9::g_netCapture.OnRx(&tmp);
+			}
 			else
 				Console.Error("DEV9: rx_fifo_can_rx() false after nif->recv(), dropping");
 		}
@@ -51,6 +56,7 @@ void tx_put(NetPacket* pkt)
 {
 	if (nif != nullptr)
 		nif->send(pkt);
+	DEV9::g_netCapture.OnTx(pkt);
 	//pkt must be copied if its not processed by here, since it can be allocated on the callers stack
 }
 
@@ -156,12 +162,56 @@ void TermNet()
 
 		delete nif;
 		nif = nullptr;
+
+		DEV9::g_netCapture.Reset();
 	}
 }
 
 using namespace PacketReader;
 using namespace PacketReader::IP;
 using namespace PacketReader::IP::UDP;
+
+// ---------------------------------------------------------------------------
+// PINE bridge helper functions
+// ---------------------------------------------------------------------------
+
+NetAdapterStatus NetGetAdapterStatus()
+{
+	NetAdapterStatus s{};
+	s.enabled = EmuConfig.DEV9.EthEnable && (nif != nullptr);
+	s.apiType = static_cast<int>(EmuConfig.DEV9.EthApi);
+	if (nif != nullptr)
+	{
+		s.ps2MAC = nif->GetPS2MAC();
+		s.ps2IP = nif->GetPS2IP();
+	}
+	return s;
+}
+
+bool NetInjectRx(const u8* data, int size)
+{
+	if (size <= 0 || size > static_cast<int>(sizeof(NetPacket::buffer)))
+		return false;
+	std::lock_guard<std::mutex> lock(rx_mutex);
+	if (!rx_fifo_can_rx())
+		return false;
+	NetPacket pkt;
+	pkt.size = size;
+	std::memcpy(pkt.buffer, data, static_cast<size_t>(size));
+	rx_process(&pkt);
+	return true;
+}
+
+bool NetInjectTx(const u8* data, int size)
+{
+	if (nif == nullptr || size <= 0 || size > static_cast<int>(sizeof(NetPacket::buffer)))
+		return false;
+	NetPacket pkt;
+	pkt.size = size;
+	std::memcpy(pkt.buffer, data, static_cast<size_t>(size));
+	tx_put(&pkt);
+	return true;
+}
 
 const IP_Address NetAdapter::internalIP{{{192, 0, 2, 1}}};
 const MAC_Address NetAdapter::broadcastMAC{{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}};
