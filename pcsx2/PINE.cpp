@@ -2166,6 +2166,7 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				// Reply OK: tx_packets (u32 LE) + rx_packets (u32 LE)
 				//           + tx_bytes (u64 LE) + rx_bytes (u64 LE)
 				//           + capture_queue_size (u16 LE) + dropped_count (u32 LE)
+				// tx_packets(4) + rx_packets(4) + tx_bytes(8) + rx_bytes(8) + capture_queue_size(2) + dropped_count(4)
 				constexpr int kStatSize = 4 + 4 + 8 + 8 + 2 + 4;
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, kStatSize, buf_size)) [[unlikely]]
 					goto error;

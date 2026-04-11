@@ -182,6 +182,8 @@ namespace DEV9
 	// Filter logic
 	// -----------------------------------------------------------------------
 
+	static constexpr int kEthernetHeaderSize = 14; // dst(6) + src(6) + type(2)
+
 	bool NetCapture::PassesFilter(const NetPacket* pkt, CaptureDirection /*direction*/) const
 	{
 		// m_mutex is already held by the caller when this is invoked from OnTx/OnRx.
@@ -190,7 +192,7 @@ namespace DEV9
 		if (m_filter.type == 0)
 			return true;
 
-		if (pkt->size < 14)
+		if (pkt->size < kEthernetHeaderSize)
 			return true; // Too short to parse; pass through.
 
 		const auto* buf = reinterpret_cast<const u8*>(pkt->buffer);
@@ -210,7 +212,7 @@ namespace DEV9
 				return false;
 			if (pkt->size < 20)
 				return false;
-			const u8 ipProto = buf[14 + 9]; // IP header protocol byte
+			const u8 ipProto = buf[kEthernetHeaderSize + 9]; // IP header protocol byte
 			switch (m_filter.protocol)
 			{
 				case 1: return ipProto == 0x06; // TCP
@@ -221,13 +223,13 @@ namespace DEV9
 				{
 					if (ipProto != 0x11)
 						return false;
-					const int ihl = (buf[14] & 0x0F) * 4;
-					if (pkt->size < 14 + ihl + 4)
+					const int ihl = (buf[kEthernetHeaderSize] & 0x0F) * 4;
+					if (pkt->size < kEthernetHeaderSize + ihl + 4)
 						return false;
 					const u16 dport = static_cast<u16>(
-						(buf[14 + ihl + 2] << 8) | buf[14 + ihl + 3]);
+						(buf[kEthernetHeaderSize + ihl + 2] << 8) | buf[kEthernetHeaderSize + ihl + 3]);
 					const u16 sport = static_cast<u16>(
-						(buf[14 + ihl + 0] << 8) | buf[14 + ihl + 1]);
+						(buf[kEthernetHeaderSize + ihl + 0] << 8) | buf[kEthernetHeaderSize + ihl + 1]);
 					if (m_filter.protocol == 5)
 						return sport == 53 || dport == 53;
 					return sport == 67 || sport == 68 || dport == 67 || dport == 68;
@@ -240,22 +242,22 @@ namespace DEV9
 		{
 			if (etherType != 0x0800 || pkt->size < 34)
 				return false;
-			const u8 ipProto = buf[14 + 9];
+			const u8 ipProto = buf[kEthernetHeaderSize + 9];
 			if (ipProto != 0x06 && ipProto != 0x11)
 				return false;
-			const int ihl = (buf[14] & 0x0F) * 4;
-			if (pkt->size < 14 + ihl + 4)
+			const int ihl = (buf[kEthernetHeaderSize] & 0x0F) * 4;
+			if (pkt->size < kEthernetHeaderSize + ihl + 4)
 				return false;
-			const u16 sport = static_cast<u16>((buf[14 + ihl + 0] << 8) | buf[14 + ihl + 1]);
-			const u16 dport = static_cast<u16>((buf[14 + ihl + 2] << 8) | buf[14 + ihl + 3]);
+			const u16 sport = static_cast<u16>((buf[kEthernetHeaderSize + ihl + 0] << 8) | buf[kEthernetHeaderSize + ihl + 1]);
+			const u16 dport = static_cast<u16>((buf[kEthernetHeaderSize + ihl + 2] << 8) | buf[kEthernetHeaderSize + ihl + 3]);
 			return sport == m_filter.port || dport == m_filter.port;
 		}
 		else if (m_filter.type == 3) // by IP
 		{
 			if (etherType != 0x0800 || pkt->size < 34)
 				return false;
-			const u8* src = buf + 14 + 12;
-			const u8* dst = buf + 14 + 16;
+			const u8* src = buf + kEthernetHeaderSize + 12;
+			const u8* dst = buf + kEthernetHeaderSize + 16;
 			return std::memcmp(src, m_filter.ip, 4) == 0 ||
 			       std::memcmp(dst, m_filter.ip, 4) == 0;
 		}
@@ -268,7 +270,7 @@ namespace DEV9
 
 	std::string NetCapture::DisassemblePacket(const u8* data, int size)
 	{
-		if (data == nullptr || size < 14)
+		if (data == nullptr || size < kEthernetHeaderSize)
 			return "[Packet too short to dissect]";
 
 		// We need a NetPacket to hand to EthernetFrame's constructor.
@@ -324,13 +326,11 @@ namespace DEV9
 				else if (proto == static_cast<u8>(IP_Type::IGMP)) protoStr = "IGMP";
 
 				out += fmt::format(
-					"[IPv4] src={} dst={} proto={} ({}) ttl={} id=0x{:04X} len={}\n",
+					"[IPv4] src={} dst={} proto={} ({}) ttl={} len={}\n",
 					FormatIP(ippkt.sourceIP.bytes),
 					FormatIP(ippkt.destinationIP.bytes),
 					proto, protoStr,
 					ippkt.timeToLive,
-					// id is private; just report protocol-level info without it
-					0,
 					pl->GetLength());
 
 				IP_Payload* ipPay = ippkt.GetPayload();
