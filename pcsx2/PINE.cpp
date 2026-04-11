@@ -18,11 +18,14 @@
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadBase.h"
 #include "SIO/Pad/PadDualshock2.h"
+#include "DEV9/net.h"
+#include "DEV9/NetCapture.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <mutex>
 #include <span>
@@ -217,6 +220,14 @@ namespace PINEServer
 		MsgPadSetAnalog        = 0x35, /**< Set analog stick positions on a pad directly. */
 		MsgPadSetState         = 0x36, /**< Set the complete pad state in one message. */
 		MsgPadGetType          = 0x37, /**< Query the controller type of a pad slot. */
+		MsgNetGetStatus        = 0x38, /**< Query DEV9 adapter status (enabled, type, MAC, IP). */
+		MsgNetCapture          = 0x39, /**< Enable/disable packet capture with direction and queue size. */
+		MsgNetRecvCapture      = 0x3A, /**< Drain captured packets from the queue. */
+		MsgNetInject           = 0x3B, /**< Inject a raw Ethernet frame into the PS2 RX path. */
+		MsgNetInjectTx         = 0x3C, /**< Inject a raw Ethernet frame out through the TX adapter. */
+		MsgNetDisassemble      = 0x3D, /**< Dissect a raw Ethernet frame and return a text summary. */
+		MsgNetSetFilter        = 0x3E, /**< Set the capture filter (by protocol, port, or IP). */
+		MsgNetGetStats         = 0x3F, /**< Return TX/RX counters and capture queue statistics. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -1953,6 +1964,227 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 					if (!pad)
 						goto error;
 					ret_buffer[ret_cnt++] = static_cast<u8>(pad->GetType());
+				}
+				break;
+			}
+			case MsgNetGetStatus:
+			{
+				// Request:  (none)
+				// Reply OK: enabled (u8) + adapter_type (u8) + ps2_mac (6 bytes) + ps2_ip (4 bytes)
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 1 + 1 + 6 + 4, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const NetAdapterStatus s = NetGetAdapterStatus();
+					ret_buffer[ret_cnt++] = s.enabled ? 1u : 0u;
+					ret_buffer[ret_cnt++] = static_cast<u8>(s.apiType);
+					std::memcpy(&ret_buffer[ret_cnt], s.ps2MAC.bytes, 6);
+					ret_cnt += 6;
+					std::memcpy(&ret_buffer[ret_cnt], s.ps2IP.bytes, 4);
+					ret_cnt += 4;
+				}
+				break;
+			}
+			case MsgNetCapture:
+			{
+				// Request:  enable (u8) + direction (u8: 0=both,1=TX-only,2=RX-only) + max_queue (u16 LE)
+				// Reply OK: (none)
+				if (!SafetyChecks(buf_cnt, 1 + 1 + 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const u8 enable        = FromSpan<u8>(buf, buf_cnt);
+					const u8 direction     = FromSpan<u8>(buf, buf_cnt + 1);
+					const u16 max_queue    = FromSpan<u16>(buf, buf_cnt + 2);
+					buf_cnt += 1 + 1 + 2;
+
+					if (enable)
+						DEV9::g_netCapture.Enable(direction, max_queue);
+					else
+						DEV9::g_netCapture.Disable();
+				}
+				break;
+			}
+			case MsgNetRecvCapture:
+			{
+				// Request:  max_packets (u16 LE)
+				// Reply OK: count (u16 LE) + per packet: direction (u8) + timestamp_us (u64 LE)
+				//           + length (u16 LE) + data (length bytes)
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 2, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const u16 max_packets = FromSpan<u16>(buf, buf_cnt);
+					buf_cnt += 2;
+
+					auto captured = DEV9::g_netCapture.Drain(max_packets);
+
+					// Write placeholder count; fill in after iterating.
+					const u32 count_offset = ret_cnt;
+					ToResultVector(ret_buffer, static_cast<u16>(0), ret_cnt);
+					ret_cnt += 2;
+
+					u16 written = 0;
+					for (const auto& cp : captured)
+					{
+						// Per-packet: 1 + 8 + 2 + cp.packet.size bytes
+						const int pkt_sz = cp.packet.size;
+						const int overhead = 1 + 8 + 2;
+						if (!SafetyChecks(0, 0, ret_cnt, overhead + pkt_sz, buf_size)) [[unlikely]]
+							break;
+
+						ret_buffer[ret_cnt++] = static_cast<u8>(cp.direction);
+						ToResultVector(ret_buffer, cp.timestamp_us, ret_cnt);
+						ret_cnt += 8;
+						ToResultVector(ret_buffer, static_cast<u16>(pkt_sz), ret_cnt);
+						ret_cnt += 2;
+						std::memcpy(&ret_buffer[ret_cnt], cp.packet.buffer, static_cast<size_t>(pkt_sz));
+						ret_cnt += static_cast<u32>(pkt_sz);
+						written++;
+					}
+
+					// Back-fill the actual count.
+					ToResultVector(ret_buffer, written, count_offset);
+				}
+				break;
+			}
+			case MsgNetInject:
+			{
+				// Request:  length (u16 LE) + data (length bytes)
+				// Reply OK: success (u8)
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 1, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const u16 length = FromSpan<u16>(buf, buf_cnt);
+					buf_cnt += 2;
+
+					if (!SafetyChecks(buf_cnt, static_cast<int>(length), ret_cnt, 0, buf_size)) [[unlikely]]
+						goto error;
+
+					const bool ok = NetInjectRx(buf.data() + buf_cnt, static_cast<int>(length));
+					buf_cnt += length;
+					ret_buffer[ret_cnt++] = ok ? 1u : 0u;
+				}
+				break;
+			}
+			case MsgNetInjectTx:
+			{
+				// Request:  length (u16 LE) + data (length bytes)
+				// Reply OK: success (u8)
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 1, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const u16 length = FromSpan<u16>(buf, buf_cnt);
+					buf_cnt += 2;
+
+					if (!SafetyChecks(buf_cnt, static_cast<int>(length), ret_cnt, 0, buf_size)) [[unlikely]]
+						goto error;
+
+					const bool ok = NetInjectTx(buf.data() + buf_cnt, static_cast<int>(length));
+					buf_cnt += length;
+					ret_buffer[ret_cnt++] = ok ? 1u : 0u;
+				}
+				break;
+			}
+			case MsgNetDisassemble:
+			{
+				// Request:  length (u16 LE) + data (length bytes)
+				// Reply OK: text_len (u16 LE) + text (text_len bytes, not null-terminated)
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 2, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const u16 length = FromSpan<u16>(buf, buf_cnt);
+					buf_cnt += 2;
+
+					if (!SafetyChecks(buf_cnt, static_cast<int>(length), ret_cnt, 0, buf_size)) [[unlikely]]
+						goto error;
+
+					const std::string text = DEV9::NetCapture::DisassemblePacket(
+						buf.data() + buf_cnt, static_cast<int>(length));
+					buf_cnt += length;
+
+					const u16 text_len = static_cast<u16>(
+						std::min<size_t>(text.size(), 0xFFFFu));
+					if (!SafetyChecks(0, 0, ret_cnt, 2 + text_len, buf_size)) [[unlikely]]
+						goto error;
+
+					ToResultVector(ret_buffer, text_len, ret_cnt);
+					ret_cnt += 2;
+					std::memcpy(&ret_buffer[ret_cnt], text.data(), text_len);
+					ret_cnt += text_len;
+				}
+				break;
+			}
+			case MsgNetSetFilter:
+			{
+				// Request:  filter_type (u8) + [type-specific args]
+				//   type 0: no extra args (clear filter)
+				//   type 1: protocol (u8)     — 0=all,1=TCP,2=UDP,3=ICMP,4=ARP,5=DNS,6=DHCP
+				//   type 2: port (u16 LE)
+				//   type 3: ip (4 bytes)
+				// Reply OK: (none)
+				if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					DEV9::NetCaptureFilter f{};
+					f.type = FromSpan<u8>(buf, buf_cnt);
+					buf_cnt += 1;
+
+					if (f.type == 1)
+					{
+						if (!SafetyChecks(buf_cnt, 1, ret_cnt, 0, buf_size)) [[unlikely]]
+							goto error;
+						f.protocol = FromSpan<u8>(buf, buf_cnt);
+						buf_cnt += 1;
+					}
+					else if (f.type == 2)
+					{
+						if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+							goto error;
+						f.port = FromSpan<u16>(buf, buf_cnt);
+						buf_cnt += 2;
+					}
+					else if (f.type == 3)
+					{
+						if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+							goto error;
+						std::memcpy(f.ip, buf.data() + buf_cnt, 4);
+						buf_cnt += 4;
+					}
+
+					DEV9::g_netCapture.SetFilter(f);
+				}
+				break;
+			}
+			case MsgNetGetStats:
+			{
+				// Request:  (none)
+				// Reply OK: tx_packets (u32 LE) + rx_packets (u32 LE)
+				//           + tx_bytes (u64 LE) + rx_bytes (u64 LE)
+				//           + capture_queue_size (u16 LE) + dropped_count (u32 LE)
+				// tx_packets(4) + rx_packets(4) + tx_bytes(8) + rx_bytes(8) + capture_queue_size(2) + dropped_count(4)
+				constexpr int kStatSize = 4 + 4 + 8 + 8 + 2 + 4;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, kStatSize, buf_size)) [[unlikely]]
+					goto error;
+
+				{
+					const DEV9::NetCaptureStats stats = DEV9::g_netCapture.GetStats();
+					ToResultVector(ret_buffer, stats.tx_packets, ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, stats.rx_packets, ret_cnt);
+					ret_cnt += 4;
+					ToResultVector(ret_buffer, stats.tx_bytes, ret_cnt);
+					ret_cnt += 8;
+					ToResultVector(ret_buffer, stats.rx_bytes, ret_cnt);
+					ret_cnt += 8;
+					ToResultVector(ret_buffer, stats.capture_queue_size, ret_cnt);
+					ret_cnt += 2;
+					ToResultVector(ret_buffer, stats.dropped_count, ret_cnt);
+					ret_cnt += 4;
 				}
 				break;
 			}

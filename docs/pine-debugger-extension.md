@@ -117,6 +117,19 @@ opcodes makes PINE a self-contained debugger transport.
 | 0x36  | `MsgPadSetState`   | Set the complete pad state in one message (bulk write) |
 | 0x37  | `MsgPadGetType`    | Query the controller type of a pad slot                |
 
+### DEV9 network bridge (0x38–0x3F)
+
+| Value | Name                | Purpose                                                         |
+|-------|---------------------|-----------------------------------------------------------------|
+| 0x38  | `MsgNetGetStatus`   | Query DEV9 adapter status (enabled, type, MAC, PS2 IP)          |
+| 0x39  | `MsgNetCapture`     | Enable/disable packet capture with direction filter and queue   |
+| 0x3A  | `MsgNetRecvCapture` | Drain buffered packets from the capture queue                   |
+| 0x3B  | `MsgNetInject`      | Inject a raw Ethernet frame into the PS2 RX FIFO               |
+| 0x3C  | `MsgNetInjectTx`    | Inject a raw Ethernet frame out through the TX adapter          |
+| 0x3D  | `MsgNetDisassemble` | Dissect a packet and return a human-readable text summary       |
+| 0x3E  | `MsgNetSetFilter`   | Set the capture filter (protocol, port, or IP)                  |
+| 0x3F  | `MsgNetGetStats`    | Return TX/RX counters and capture queue statistics              |
+
 ---
 
 ## Packet Formats
@@ -638,6 +651,182 @@ Query the controller type installed in a pad slot.
 
 ---
 
+### MsgNetGetStatus (0x38)
+
+Query the current DEV9 network adapter status without requiring a running game.
+
+- **Request:** 5 bytes — size (u32 LE) + opcode.
+- **Reply (OK):** 17 bytes — `IPC_OK` + `enabled` (u8) + `adapter_type` (u8)
+  + `ps2_mac` (6 bytes) + `ps2_ip` (4 bytes).
+
+`adapter_type` maps to `Pcsx2Config::DEV9Options::NetApi`:
+
+| Value | Meaning       |
+|-------|---------------|
+| 0     | Unset         |
+| 1     | PCAP_Bridged  |
+| 2     | PCAP_Switched |
+| 3     | TAP           |
+| 4     | Sockets       |
+
+`enabled` is 1 when `EthEnable` is set **and** the adapter has been successfully
+opened.  `ps2_mac` is the 6-byte PS2 MAC address (zeroed if the adapter is not
+active).  `ps2_ip` is the last IPv4 address seen in a PS2-originating packet (zeroed
+until at least one packet has been processed).
+
+- **Reply (fail):** never fails; always returns `IPC_OK`.
+
+---
+
+### MsgNetCapture (0x39)
+
+Enable or disable the packet capture ring buffer.
+
+- **Request:** 9 bytes — opcode + `enable` (u8) + `direction` (u8)
+  + `max_queue` (u16 LE).
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+
+`direction` controls which packets are stored:
+
+| Value | Meaning          |
+|-------|------------------|
+| 0     | Both TX and RX   |
+| 1     | TX only (PS2→Host) |
+| 2     | RX only (Host→PS2) |
+
+When `enable` is 0 the capture is stopped and the queue is cleared (regardless of the
+`direction` and `max_queue` fields).  When `enable` is 1 the queue is started fresh
+with the given direction filter and a maximum of `max_queue` entries (0 → default
+1000).  Packets that arrive while the queue is full are silently dropped; the dropped
+count is available via `MsgNetGetStats`.
+
+A separate per-protocol filter may be applied with `MsgNetSetFilter`; the filter is
+applied in addition to the direction filter.
+
+---
+
+### MsgNetRecvCapture (0x3A)
+
+Drain captured packets from the ring buffer.
+
+- **Request:** 7 bytes — opcode + `max_packets` (u16 LE).
+- **Reply (OK):** 7 + N bytes — `IPC_OK` + `count` (u16 LE) + per-packet records.
+
+Each per-packet record:
+
+| Field          | Type    | Description                                      |
+|----------------|---------|--------------------------------------------------|
+| `direction`    | u8      | 0 = TX (PS2→Host), 1 = RX (Host→PS2)            |
+| `timestamp_us` | u64 LE  | Monotonic timestamp in microseconds              |
+| `length`       | u16 LE  | Length of the raw Ethernet frame in bytes        |
+| `data`         | bytes   | Raw Ethernet frame bytes (`length` bytes)        |
+
+Up to `max_packets` packets are removed from the queue atomically.  If the reply
+buffer would overflow before all requested packets fit, the loop stops early and only
+the packets that fit are returned; the remainder stays in the queue.
+
+---
+
+### MsgNetInject (0x3B)
+
+Inject a raw Ethernet frame into the PS2 RX path as if it arrived from the network.
+This is the primary mechanism for packet playback / fuzzing.
+
+- **Request:** 7 + N bytes — opcode + `length` (u16 LE) + `data` (`length` bytes).
+- **Reply (OK):** 6 bytes — `IPC_OK` + `success` (u8).
+
+`success` is 1 if the frame was written to the SMAP RX FIFO, 0 if the FIFO was full
+or the adapter was not initialised.  The FIFO holds at most 64 frames; if it is full
+the caller should retry after a short delay.
+
+The frame bypasses all adapter backends and is injected directly into the SMAP
+hardware emulation, so it works with any adapter type (PCAP, TAP, Sockets) or even
+when no real network device is configured.
+
+---
+
+### MsgNetInjectTx (0x3C)
+
+Inject a raw Ethernet frame out through the TX adapter as if the PS2 sent it.
+
+- **Request:** 7 + N bytes — opcode + `length` (u16 LE) + `data` (`length` bytes).
+- **Reply (OK):** 6 bytes — `IPC_OK` + `success` (u8).
+
+`success` is 1 if the adapter accepted the frame, 0 if the adapter was not
+initialised.  This is useful for replaying captured PS2-originated traffic without
+running the PS2 emulation.
+
+---
+
+### MsgNetDisassemble (0x3D)
+
+Dissect a raw Ethernet frame and return a human-readable text summary of every
+protocol layer.
+
+- **Request:** 7 + N bytes — opcode + `length` (u16 LE) + `data` (`length` bytes).
+- **Reply (OK):** 7 + T bytes — `IPC_OK` + `text_len` (u16 LE) + `text` (`text_len`
+  bytes, **not** null-terminated).
+
+The text contains one line per recognised protocol layer, for example:
+
+```
+[Ethernet] dst=00:04:1F:82:30:31 src=AA:BB:CC:DD:EE:FF type=0x0800
+[IPv4] src=192.168.1.1 dst=192.0.2.100 proto=6 (TCP) ttl=64 id=0x0000 len=60
+[TCP] src=80 dst=12345 seq=1000 ack=0 flags=[SYN] win=65535 payload=0B
+```
+
+Supported layers: Ethernet, ARP, IPv4, ICMP, TCP, UDP.
+
+---
+
+### MsgNetSetFilter (0x3E)
+
+Set the protocol filter applied to the capture queue.  The filter is checked after the
+direction filter set by `MsgNetCapture`; a packet must pass both filters to be queued.
+
+- **Request:** 6 + extra bytes — opcode + `filter_type` (u8) + type-specific args.
+- **Reply (OK):** 5 bytes — `IPC_OK`.
+
+| `filter_type` | Extra args                   | Description                           |
+|---------------|------------------------------|---------------------------------------|
+| 0             | (none)                       | No filter — capture all packets       |
+| 1             | `protocol` (u8)              | Filter by L3/L4 protocol (see below)  |
+| 2             | `port` (u16 LE)              | Filter by TCP or UDP port number      |
+| 3             | `ip` (4 bytes, network order) | Filter by source or destination IPv4  |
+
+`protocol` values for `filter_type` = 1:
+
+| Value | Meaning                             |
+|-------|-------------------------------------|
+| 0     | All (no protocol filter)            |
+| 1     | TCP only                            |
+| 2     | UDP only                            |
+| 3     | ICMP only                           |
+| 4     | ARP only                            |
+| 5     | DNS only (UDP source or dest port 53) |
+| 6     | DHCP only (UDP port 67 or 68)       |
+
+---
+
+### MsgNetGetStats (0x3F)
+
+Return cumulative TX/RX counters and the current capture queue statistics.  Counters
+are reset by `TermNet()` (when the adapter is torn down).
+
+- **Request:** 5 bytes — opcode only.
+- **Reply (OK):** 35 bytes — `IPC_OK` + fields below.
+
+| Field                | Type    | Description                                        |
+|----------------------|---------|----------------------------------------------------|
+| `tx_packets`         | u32 LE  | Total packets sent by the PS2 since adapter open   |
+| `rx_packets`         | u32 LE  | Total packets received by the PS2 since adapter open |
+| `tx_bytes`           | u64 LE  | Total TX bytes                                     |
+| `rx_bytes`           | u64 LE  | Total RX bytes                                     |
+| `capture_queue_size` | u16 LE  | Number of packets currently in the capture queue   |
+| `dropped_count`      | u32 LE  | Packets dropped because the capture queue was full |
+
+---
+
 All opcodes 0x10–0x32 are **single-command only** — they must not appear inside a
 multi-command batch request. If any of them is encountered after another command
 has already been processed in the same request buffer, the server returns `IPC_FAIL`
@@ -725,3 +914,19 @@ current PC.
 - [ ] `MsgPadGetType(0)` returns `0x01` for a DualShock2 controller
 - [ ] `MsgPadGetType(0)` returns `0x00` when no controller is connected
 - [ ] `MsgPadGetType` returns `IPC_FAIL` for an out-of-range slot
+- [ ] `MsgNetGetStatus` returns `enabled=0` when DEV9 is disabled; always returns `IPC_OK`
+- [ ] `MsgNetGetStatus` returns the correct MAC address when DEV9 is active
+- [ ] `MsgNetCapture(1, 0, 100)` enables capture for both TX and RX with queue size 100
+- [ ] `MsgNetCapture(0, 0, 0)` disables capture and clears the queue
+- [ ] `MsgNetRecvCapture(50)` returns at most 50 packets; each has a valid direction, timestamp, and length
+- [ ] `MsgNetRecvCapture` returns `count=0` when no packets are queued
+- [ ] `MsgNetInject` with a valid ARP frame returns `success=1` when DEV9 is active and FIFO has space
+- [ ] `MsgNetInject` returns `success=0` when DEV9 is not initialised
+- [ ] `MsgNetInjectTx` with a valid frame returns `success=1` when an adapter is open
+- [ ] `MsgNetInjectTx` returns `success=0` when no adapter is open
+- [ ] `MsgNetDisassemble` with a valid ARP frame returns a text string containing `[Ethernet]` and `[ARP]`
+- [ ] `MsgNetDisassemble` with a valid TCP/IP frame returns lines for `[Ethernet]`, `[IPv4]`, and `[TCP]`
+- [ ] `MsgNetSetFilter(1, 1)` (TCP only) causes `MsgNetRecvCapture` to return only TCP packets
+- [ ] `MsgNetSetFilter(0)` clears the filter so all packets pass through
+- [ ] `MsgNetGetStats` returns increasing `tx_packets`/`rx_packets` as traffic flows
+- [ ] `MsgNetGetStats` `dropped_count` increases when the capture queue overflows

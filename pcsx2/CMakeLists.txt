@@ -318,6 +318,7 @@ set(pcsx2DEV9Sources
 	DEV9/flash.cpp
 	DEV9/pcap_io.cpp
 	DEV9/net.cpp
+	DEV9/NetCapture.cpp
 	)
 
 # DEV9 headers
@@ -331,6 +332,7 @@ set(pcsx2DEV9Headers
 	DEV9/InternalServers/DNS_Logger.h
 	DEV9/InternalServers/DNS_Server.h
 	DEV9/net.h
+	DEV9/NetCapture.h
 	DEV9/PacketReader/ARP/ARP_Packet.h
 	DEV9/PacketReader/ARP/ARP_PacketEditor.h
 	DEV9/PacketReader/IP/ICMP/ICMP_Packet.h
