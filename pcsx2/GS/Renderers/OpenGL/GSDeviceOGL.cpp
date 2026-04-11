@@ -43,8 +43,14 @@ namespace ReplaceGL
 		glViewport(GLint(x), GLint(y), GLsizei(w), GLsizei(h));
 	}
 
+	static void GLAPIENTRY MemoryBarrierAsTextureBarrier()
+	{
+		glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+	}
+
 	static void GLAPIENTRY TextureBarrier()
 	{
+
 	}
 
 } // namespace ReplaceGL
@@ -751,11 +757,17 @@ bool GSDeviceOGL::CheckFeatures()
 
 	if (!GLAD_GL_ARB_texture_barrier)
 	{
-		glTextureBarrier = ReplaceGL::TextureBarrier;
-		// Switch to fallback.
-		m_features.multidraw_fb_copy = true;
-		Host::AddOSDMessage(
-			"GL_ARB_texture_barrier is not supported, blending will be slower.", Host::OSD_ERROR_DURATION);
+		// First try NV only barrier.
+		// If that doesn't work then switch to multidraw fb copy.
+		if (GLAD_GL_NV_texture_barrier)
+			glTextureBarrier = glTextureBarrierNV;
+		else
+		{
+			glTextureBarrier = ReplaceGL::TextureBarrier;
+			m_features.multidraw_fb_copy = true;
+			Host::AddOSDMessage(
+				"GL_ARB_texture_barrier is not supported, blending will be slower.", Host::OSD_ERROR_DURATION);
+		}
 	}
 
 	if (!GLAD_GL_ARB_direct_state_access)
@@ -797,11 +809,16 @@ bool GSDeviceOGL::CheckFeatures()
 	}
 	else if (GSConfig.OverrideTextureBarriers == 1)
 	{
+		// No texture barriers supported so try to use memory barrier.
+		// Not guaranteed to work so only enable it in Force Enabled mode.
+		if (!GLAD_GL_ARB_texture_barrier && !GLAD_GL_NV_texture_barrier && GLAD_GL_ARB_shader_image_load_store)
+			glTextureBarrier = ReplaceGL::MemoryBarrierAsTextureBarrier;
+
 		m_features.texture_barrier = true; // Force Enabled
 		m_features.multidraw_fb_copy = false;
 	}
 	else
-		m_features.texture_barrier = m_features.framebuffer_fetch || GLAD_GL_ARB_texture_barrier;
+		m_features.texture_barrier = m_features.framebuffer_fetch || GLAD_GL_ARB_texture_barrier || GLAD_GL_NV_texture_barrier;
 
 	m_features.provoking_vertex_last = true;
 	m_features.dxt_textures = GLAD_GL_EXT_texture_compression_s3tc;
@@ -1500,8 +1517,8 @@ std::string GSDeviceOGL::GetPSSource(const PSSelector& sel)
 		+ fmt::format("#define PS_AEM {}\n", sel.aem)
 		+ fmt::format("#define PS_TFX {}\n", sel.tfx)
 		+ fmt::format("#define PS_TCC {}\n", sel.tcc)
-		+ fmt::format("#define PS_ATST {}\n", sel.atst)
-		+ fmt::format("#define PS_AFAIL {}\n", sel.afail)
+		+ fmt::format("#define PS_ATST {}\n", static_cast<u32>(sel.atst))
+		+ fmt::format("#define PS_AFAIL {}\n", static_cast<u32>(sel.afail))
 		+ fmt::format("#define PS_FOG {}\n", sel.fog)
 		+ fmt::format("#define PS_BLEND_HW {}\n", sel.blend_hw)
 		+ fmt::format("#define PS_A_MASKED {}\n", sel.a_masked)
@@ -1533,7 +1550,6 @@ std::string GSDeviceOGL::GetPSSource(const PSSelector& sel)
 		+ fmt::format("#define PS_DITHER_ADJUST {}\n", sel.dither_adjust)
 		+ fmt::format("#define PS_ZCLAMP {}\n", sel.zclamp)
 		+ fmt::format("#define PS_ZFLOOR {}\n", sel.zfloor)
-		+ fmt::format("#define PS_ZWRITE {}\n", sel.zwrite)
 		+ fmt::format("#define PS_BLEND_MIX {}\n", sel.blend_mix)
 		+ fmt::format("#define PS_ROUND_INV {}\n", sel.round_inv)
 		+ fmt::format("#define PS_FIXED_ONE_A {}\n", sel.fixed_one_a)
@@ -1542,8 +1558,6 @@ std::string GSDeviceOGL::GetPSSource(const PSSelector& sel)
 		+ fmt::format("#define PS_NO_COLOR {}\n", sel.no_color)
 		+ fmt::format("#define PS_NO_COLOR1 {}\n", sel.no_color1)
 		+ fmt::format("#define PS_ZTST {}\n", sel.ztst)
-		+ fmt::format("#define PS_COLOR_FEEDBACK {}\n", sel.color_feedback)
-		+ fmt::format("#define PS_DEPTH_FEEDBACK {}\n", sel.depth_feedback)
 	;
 
 	std::string src = GenGlslHeader("ps_main", GL_FRAGMENT_SHADER, macro);
