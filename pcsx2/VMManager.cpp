@@ -3742,10 +3742,13 @@ void VMManager::ReloadPINE()
 
 	if (EmuConfig.EnablePINE)
 	{
-		PINEServer::Initialize(EmuConfig.PINESlot);
-		// Bring up the GS stream listener alongside PINE on an OS-assigned port.
-		// Clients discover the actual port via the MsgGSStreamGetPort opcode.
-		GSStreamServer::Initialize(0);
+		// Only bring up the GS stream listener if PINE itself came up — clients
+		// discover the GS port via the MsgGSStreamGetPort PINE opcode, so a
+		// GSStreamServer with no PINE in front of it is unreachable and just
+		// holds an idle socket. Also avoids confusing log output where the
+		// GS line appears after a PINE port-collision failure.
+		if (PINEServer::Initialize(EmuConfig.PINESlot))
+			GSStreamServer::Initialize(0);
 	}
 }
 
