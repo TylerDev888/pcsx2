@@ -76,17 +76,32 @@ namespace
 	RGBA8Image s_encode_image;
 	u32 s_next_frame_idx = 0;
 
-	bool MakeNonBlocking(socket_t s)
+	void ConfigureClientSocket(socket_t s)
 	{
+		// Keep subscriber sockets blocking so WriteAll() can reliably drain
+		// the full frame header+payload; a send timeout bounds stalls.
 #if defined(_WIN32)
-		u_long mode = 1;
-		return ioctlsocket(s, FIONBIO, &mode) == 0;
+		DWORD send_timeout_ms = 250;
+		setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&send_timeout_ms), sizeof(send_timeout_ms));
 #else
-		// Leave subscribers blocking — keeps the writer simple. The
-		// caller can configure SO_SNDTIMEO if it wants a bound on slow clients.
-		(void)s;
-		return true;
+		const timeval send_timeout = {0, 250 * 1000};
+		setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
 #endif
+	}
+
+
+	void WriteLE16(u8* dst, u16 value)
+	{
+		dst[0] = static_cast<u8>(value & 0xFF);
+		dst[1] = static_cast<u8>((value >> 8) & 0xFF);
+	}
+
+	void WriteLE32(u8* dst, u32 value)
+	{
+		dst[0] = static_cast<u8>(value & 0xFF);
+		dst[1] = static_cast<u8>((value >> 8) & 0xFF);
+		dst[2] = static_cast<u8>((value >> 16) & 0xFF);
+		dst[3] = static_cast<u8>((value >> 24) & 0xFF);
 	}
 
 	void DropSubscriberLocked(size_t idx)
@@ -118,13 +133,13 @@ namespace
 		const u32 size_field = static_cast<u32>(kHeaderAfterSize + payload_size);
 
 		u8 hdr[4 + kHeaderAfterSize];
-		std::memcpy(hdr + 0,  &size_field, 4);
+		WriteLE32(hdr + 0, size_field);
 		hdr[4] = kMsgTypeFrame;
-		std::memcpy(hdr + 5,  &frame_idx, 4);
+		WriteLE32(hdr + 5, frame_idx);
 		const u16 w = static_cast<u16>(width);
 		const u16 h = static_cast<u16>(height);
-		std::memcpy(hdr + 9,  &w, 2);
-		std::memcpy(hdr + 11, &h, 2);
+		WriteLE16(hdr + 9, w);
+		WriteLE16(hdr + 11, h);
 		hdr[13] = kCodecMJPEG;
 		hdr[14] = 0;
 
@@ -168,7 +183,7 @@ namespace
 			int one = 1;
 			setsockopt(client, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
 
-			MakeNonBlocking(client); // no-op on POSIX; Windows path keeps writes from blocking forever
+			ConfigureClientSocket(client);
 
 			{
 				std::lock_guard<std::mutex> lock(s_subscribers_mutex);
@@ -218,9 +233,10 @@ namespace
 			std::memcpy(s_encode_image.GetPixels(), local_pixels.data(), local_pixels.size() * sizeof(u32));
 
 			auto encoded = s_encode_image.SaveToBuffer("frame.jpg", kJpegQuality);
-			if (!encoded.has_value())
+			if (!encoded.has_value() || encoded->size() < 4 || (*encoded)[0] != 0xFF || (*encoded)[1] != 0xD8 ||
+				(*encoded)[encoded->size() - 2] != 0xFF || (*encoded)[encoded->size() - 1] != 0xD9)
 			{
-				Console.Warning("GSStream: JPEG encode failed for %ux%u frame.", width, height);
+				Console.Warning("GSStream: JPEG encode invalid for %ux%u frame (size=%zu).", width, height, encoded.has_value() ? encoded->size() : 0u);
 				continue;
 			}
 
