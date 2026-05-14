@@ -10,6 +10,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GSDumpReplayer.h"
+#include "GSStreamServer.h"
 #include "Host.h"
 #include "PerformanceMetrics.h"
 #include "pcsx2/Config.h"
@@ -839,6 +840,22 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				g_gs_device->Recycle(temp);
 			}
 		}
+	}
+
+	// Live screen streaming over a dedicated PINE-adjacent socket. Only does any
+	// work when at least one subscriber is connected — the check is lock-free.
+	if (GSStreamServer::HasSubscribers())
+	{
+		// Fixed downsample target keeps bandwidth predictable regardless of the
+		// internal upscale factor. 640x480 is roughly the PS2 native frame; the
+		// JPEG payload at q=80 lands around 30KB.
+		static constexpr u32 kStreamWidth = 640;
+		static constexpr u32 kStreamHeight = 480;
+
+		u32 sw = 0, sh = 0;
+		std::vector<u32> spx;
+		if (SaveSnapshotToMemory(kStreamWidth, kStreamHeight, true, false, &sw, &sh, &spx))
+			GSStreamServer::DeliverRGBA(sw, sh, spx.data());
 	}
 }
 
