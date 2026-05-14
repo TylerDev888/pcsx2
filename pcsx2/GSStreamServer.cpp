@@ -76,16 +76,16 @@ namespace
 	RGBA8Image s_encode_image;
 	u32 s_next_frame_idx = 0;
 
-	bool MakeNonBlocking(socket_t s)
+	void ConfigureClientSocket(socket_t s)
 	{
+		// Keep subscriber sockets blocking so WriteAll() can reliably drain
+		// the full frame header+payload; a send timeout bounds stalls.
 #if defined(_WIN32)
-		u_long mode = 1;
-		return ioctlsocket(s, FIONBIO, &mode) == 0;
+		DWORD send_timeout_ms = 250;
+		setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&send_timeout_ms), sizeof(send_timeout_ms));
 #else
-		// Leave subscribers blocking — keeps the writer simple. The
-		// caller can configure SO_SNDTIMEO if it wants a bound on slow clients.
-		(void)s;
-		return true;
+		const timeval send_timeout = {0, 250 * 1000};
+		setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
 #endif
 	}
 
@@ -168,7 +168,7 @@ namespace
 			int one = 1;
 			setsockopt(client, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
 
-			MakeNonBlocking(client); // no-op on POSIX; Windows path keeps writes from blocking forever
+			ConfigureClientSocket(client);
 
 			{
 				std::lock_guard<std::mutex> lock(s_subscribers_mutex);
@@ -218,9 +218,9 @@ namespace
 			std::memcpy(s_encode_image.GetPixels(), local_pixels.data(), local_pixels.size() * sizeof(u32));
 
 			auto encoded = s_encode_image.SaveToBuffer("frame.jpg", kJpegQuality);
-			if (!encoded.has_value())
+			if (!encoded.has_value() || encoded->empty())
 			{
-				Console.Warning("GSStream: JPEG encode failed for %ux%u frame.", width, height);
+				Console.Warning("GSStream: JPEG encode failed/empty for %ux%u frame.", width, height);
 				continue;
 			}
 
