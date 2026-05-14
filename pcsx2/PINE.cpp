@@ -20,6 +20,7 @@
 #include "SIO/Pad/PadDualshock2.h"
 #include "DEV9/net.h"
 #include "DEV9/NetCapture.h"
+#include "GSStreamServer.h"
 #include "common/Error.h"
 #include "common/Threading.h"
 
@@ -228,6 +229,9 @@ namespace PINEServer
 		MsgNetDisassemble      = 0x3D, /**< Dissect a raw Ethernet frame and return a text summary. */
 		MsgNetSetFilter        = 0x3E, /**< Set the capture filter (by protocol, port, or IP). */
 		MsgNetGetStats         = 0x3F, /**< Return TX/RX counters and capture queue statistics. */
+		MsgGSStreamGetPort     = 0x40, /**< Return the GS stream listener port (0 if disabled). */
+		MsgGSStreamGetStatus   = 0x41, /**< Return GS stream stats: active, port, subscribers, delivered, dropped. */
+		MsgGSStreamPing        = 0x42, /**< Reserved: lightweight liveness probe for the GS stream channel. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
 
@@ -2186,6 +2190,51 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 					ToResultVector(ret_buffer, stats.dropped_count, ret_cnt);
 					ret_cnt += 4;
 				}
+				break;
+			}
+			case MsgGSStreamGetPort:
+			{
+				// Request:  (none)
+				// Reply OK: port (u16 LE)  — 0 when the stream listener is not initialized.
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 2, buf_size)) [[unlikely]]
+					goto error;
+
+				const int port = GSStreamServer::IsInitialized() ? GSStreamServer::GetPort() : 0;
+				const u16 port_u16 = (port > 0 && port <= 0xFFFF) ? static_cast<u16>(port) : 0;
+				ToResultVector(ret_buffer, port_u16, ret_cnt);
+				ret_cnt += 2;
+				break;
+			}
+			case MsgGSStreamGetStatus:
+			{
+				// Request:  (none)
+				// Reply OK: active (u8) + port (u16 LE) + subscribers (u32 LE)
+				//           + frames_delivered (u32 LE) + frames_dropped (u32 LE)
+				constexpr int kStatusSize = 1 + 2 + 4 + 4 + 4;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, kStatusSize, buf_size)) [[unlikely]]
+					goto error;
+
+				const GSStreamServer::Stats stats = GSStreamServer::GetStats();
+				const u8 active = GSStreamServer::IsInitialized() ? 1 : 0;
+				const u16 port_u16 = stats.bound_port <= 0xFFFFu ? static_cast<u16>(stats.bound_port) : 0;
+				ToResultVector(ret_buffer, active, ret_cnt);
+				ret_cnt += 1;
+				ToResultVector(ret_buffer, port_u16, ret_cnt);
+				ret_cnt += 2;
+				ToResultVector(ret_buffer, stats.subscribers, ret_cnt);
+				ret_cnt += 4;
+				ToResultVector(ret_buffer, stats.frames_delivered, ret_cnt);
+				ret_cnt += 4;
+				ToResultVector(ret_buffer, stats.frames_dropped, ret_cnt);
+				ret_cnt += 4;
+				break;
+			}
+			case MsgGSStreamPing:
+			{
+				// Request:  (none)
+				// Reply OK: (empty) — used by the bridge to confirm the GS stream control plane is wired up.
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
 				break;
 			}
 			default:

@@ -87,6 +87,7 @@ set(pcsx2Sources
 	IopIrq.cpp
 	IopMem.cpp
 	PINE.cpp
+	GSStreamServer.cpp
 	Mdec.cpp
 	Memory.cpp
 	MMI.cpp
@@ -168,6 +169,7 @@ set(pcsx2Headers
 	IopMem.h
 	LayeredSettingsInterface.h
 	PINE.h
+	GSStreamServer.h
 	Mdec.h
 	MTGS.h
 	MTVU.h

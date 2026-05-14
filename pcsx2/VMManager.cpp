@@ -25,6 +25,7 @@
 #include "MTGS.h"
 #include "MTVU.h"
 #include "PINE.h"
+#include "GSStreamServer.h"
 #include "Patch.h"
 #include "PerformanceMetrics.h"
 #include "R3000A.h"
@@ -437,6 +438,7 @@ void VMManager::Internal::CPUThreadShutdown()
 {
 	ShutdownDiscordPresence();
 
+	GSStreamServer::Deinitialize();
 	PINEServer::Deinitialize();
 
 	Achievements::Shutdown(false);
@@ -3735,10 +3737,16 @@ void VMManager::ReloadPINE()
 	if (!needs_reinit)
 		return;
 
+	GSStreamServer::Deinitialize();
 	PINEServer::Deinitialize();
 
 	if (EmuConfig.EnablePINE)
+	{
 		PINEServer::Initialize(EmuConfig.PINESlot);
+		// Bring up the GS stream listener alongside PINE on an OS-assigned port.
+		// Clients discover the actual port via the MsgGSStreamGetPort opcode.
+		GSStreamServer::Initialize(0);
+	}
 }
 
 void VMManager::InitializeDiscordPresence()
