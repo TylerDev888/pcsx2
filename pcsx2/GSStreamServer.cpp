@@ -218,9 +218,9 @@ namespace
 			std::memcpy(s_encode_image.GetPixels(), local_pixels.data(), local_pixels.size() * sizeof(u32));
 
 			auto encoded = s_encode_image.SaveToBuffer("frame.jpg", kJpegQuality);
-			if (!encoded.has_value())
+			if (!encoded.has_value() || encoded->empty())
 			{
-				Console.Warning("GSStream: JPEG encode failed for %ux%u frame.", width, height);
+				Console.Warning("GSStream: JPEG encode failed/empty for %ux%u frame.", width, height);
 				continue;
 			}
 
