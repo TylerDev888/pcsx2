@@ -89,6 +89,21 @@ namespace
 #endif
 	}
 
+
+	void WriteLE16(u8* dst, u16 value)
+	{
+		dst[0] = static_cast<u8>(value & 0xFF);
+		dst[1] = static_cast<u8>((value >> 8) & 0xFF);
+	}
+
+	void WriteLE32(u8* dst, u32 value)
+	{
+		dst[0] = static_cast<u8>(value & 0xFF);
+		dst[1] = static_cast<u8>((value >> 8) & 0xFF);
+		dst[2] = static_cast<u8>((value >> 16) & 0xFF);
+		dst[3] = static_cast<u8>((value >> 24) & 0xFF);
+	}
+
 	void DropSubscriberLocked(size_t idx)
 	{
 		gs_close(s_subscribers[idx]);
@@ -118,13 +133,13 @@ namespace
 		const u32 size_field = static_cast<u32>(kHeaderAfterSize + payload_size);
 
 		u8 hdr[4 + kHeaderAfterSize];
-		std::memcpy(hdr + 0,  &size_field, 4);
+		WriteLE32(hdr + 0, size_field);
 		hdr[4] = kMsgTypeFrame;
-		std::memcpy(hdr + 5,  &frame_idx, 4);
+		WriteLE32(hdr + 5, frame_idx);
 		const u16 w = static_cast<u16>(width);
 		const u16 h = static_cast<u16>(height);
-		std::memcpy(hdr + 9,  &w, 2);
-		std::memcpy(hdr + 11, &h, 2);
+		WriteLE16(hdr + 9, w);
+		WriteLE16(hdr + 11, h);
 		hdr[13] = kCodecMJPEG;
 		hdr[14] = 0;
 
@@ -218,9 +233,10 @@ namespace
 			std::memcpy(s_encode_image.GetPixels(), local_pixels.data(), local_pixels.size() * sizeof(u32));
 
 			auto encoded = s_encode_image.SaveToBuffer("frame.jpg", kJpegQuality);
-			if (!encoded.has_value() || encoded->empty())
+			if (!encoded.has_value() || encoded->size() < 4 || (*encoded)[0] != 0xFF || (*encoded)[1] != 0xD8 ||
+				(*encoded)[encoded->size() - 2] != 0xFF || (*encoded)[encoded->size() - 1] != 0xD9)
 			{
-				Console.Warning("GSStream: JPEG encode failed/empty for %ux%u frame.", width, height);
+				Console.Warning("GSStream: JPEG encode invalid for %ux%u frame (size=%zu).", width, height, encoded.has_value() ? encoded->size() : 0u);
 				continue;
 			}
 
