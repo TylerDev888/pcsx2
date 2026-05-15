@@ -232,7 +232,20 @@ namespace PINEServer
 		MsgGSStreamGetPort     = 0x40, /**< Return the GS stream listener port (0 if disabled). */
 		MsgGSStreamGetStatus   = 0x41, /**< Return GS stream stats: active, port, subscribers, delivered, dropped. */
 		MsgGSStreamPing        = 0x42, /**< Reserved: lightweight liveness probe for the GS stream channel. */
+		MsgReadMemBatch        = 0x43, /**< Read fixed-size memory slices from multiple addresses. */
+		MsgWriteMemBatch       = 0x44, /**< Write fixed-size memory slices to multiple addresses. */
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
+	};
+
+	enum BatchResult : u8
+	{
+		BatchSuccess = 0,
+		BatchPartial = 1,
+	};
+
+	enum BatchItemResult : u8
+	{
+		BatchItemOk = 0,
 	};
 
 	/**
@@ -661,6 +674,9 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 	// Watches: start(4) + end(4) + cond(1) + result(1) + cpu(1) = 11 bytes each
 	static constexpr int MAX_WATCHES_RESPONSE      = 10000;
 	static constexpr int WATCH_ENTRY_SIZE          = 4 + 4 + 1 + 1 + 1;
+	static constexpr u16 MAX_BATCH_COUNT           = 1024;
+	static constexpr u16 MAX_BATCH_LENGTH_PER_ITEM = 256;
+	static constexpr u32 MAX_BATCH_TOTAL_BYTES     = 1024 * 1024;
 
 	u32 ret_cnt = 5;
 	u32 buf_cnt = 0;
@@ -780,6 +796,117 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				const u32 a = FromSpan<u32>(buf, buf_cnt);
 				memWrite64(a, FromSpan<u64>(buf, buf_cnt + 4));
 				buf_cnt += 12;
+				break;
+			}
+			case MsgReadMemBatch:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + 2 + 2, ret_cnt, 1 + 2, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu = FromSpan<u8>(buf, buf_cnt);
+				const u16 item_size = FromSpan<u16>(buf, buf_cnt + 1);
+				const u16 count = FromSpan<u16>(buf, buf_cnt + 3);
+				buf_cnt += 5;
+
+				if (count == 0 || count > MAX_BATCH_COUNT || item_size == 0 || item_size > MAX_BATCH_LENGTH_PER_ITEM)
+					goto error;
+				if (static_cast<u32>(count) * static_cast<u32>(item_size) > MAX_BATCH_TOTAL_BYTES)
+					goto error;
+				if (!SafetyChecks(buf_cnt, static_cast<int>(count) * 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				u8 batch_status = BatchSuccess;
+				u16 returned_count = 0;
+				ret_buffer[ret_cnt++] = batch_status;
+				ToResultVector(ret_buffer, returned_count, ret_cnt);
+				ret_cnt += 2;
+
+				for (u16 i = 0; i < count; i++)
+				{
+					const u32 addr = FromSpan<u32>(buf, buf_cnt);
+					buf_cnt += 4;
+
+					if ((ret_cnt + 4 + 1 + 2 + item_size) > MAX_BATCH_TOTAL_BYTES || !SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1 + 2 + item_size, buf_size))
+					{
+						batch_status = BatchPartial;
+						break;
+					}
+
+					ToResultVector(ret_buffer, addr, ret_cnt);
+					ret_cnt += 4;
+					ret_buffer[ret_cnt++] = BatchItemOk;
+					ToResultVector(ret_buffer, item_size, ret_cnt);
+					ret_cnt += 2;
+
+					for (u16 b = 0; b < item_size; b++)
+					{
+						const u8 byte = (cpu == 1) ? iopMemRead8(addr + b) : memRead8(addr + b);
+						ret_buffer[ret_cnt++] = byte;
+					}
+					returned_count++;
+				}
+
+				ToResultVector(ret_buffer, batch_status, ret_cnt - (1 + 2));
+				ToResultVector(ret_buffer, returned_count, ret_cnt - 2);
+				break;
+			}
+			case MsgWriteMemBatch:
+			{
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 1 + 2 + 2, ret_cnt, 1 + 2, buf_size)) [[unlikely]]
+					goto error;
+
+				const u8 cpu = FromSpan<u8>(buf, buf_cnt);
+				const u16 item_size = FromSpan<u16>(buf, buf_cnt + 1);
+				const u16 count = FromSpan<u16>(buf, buf_cnt + 3);
+				buf_cnt += 5;
+
+				if (count == 0 || count > MAX_BATCH_COUNT || item_size == 0 || item_size > MAX_BATCH_LENGTH_PER_ITEM)
+					goto error;
+				if (static_cast<u32>(count) * static_cast<u32>(item_size) > MAX_BATCH_TOTAL_BYTES)
+					goto error;
+				if (!SafetyChecks(buf_cnt, (static_cast<int>(count) * 4) + (static_cast<int>(count) * item_size), ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				u8 batch_status = BatchSuccess;
+				u16 returned_count = 0;
+				ret_buffer[ret_cnt++] = batch_status;
+				ToResultVector(ret_buffer, returned_count, ret_cnt);
+				ret_cnt += 2;
+
+				for (u16 i = 0; i < count; i++)
+				{
+					const u32 addr = FromSpan<u32>(buf, buf_cnt);
+					buf_cnt += 4;
+					const u32 data_start = buf_cnt;
+					buf_cnt += item_size;
+
+					if (!SafetyChecks(buf_cnt, 0, ret_cnt, 4 + 1, buf_size))
+					{
+						batch_status = BatchPartial;
+						break;
+					}
+
+					for (u16 b = 0; b < item_size; b++)
+					{
+						const u8 byte = FromSpan<u8>(buf, data_start + b);
+						if (cpu == 1)
+							iopMemWrite8(addr + b, byte);
+						else
+							memWrite8(addr + b, byte);
+					}
+
+					ToResultVector(ret_buffer, addr, ret_cnt);
+					ret_cnt += 4;
+					ret_buffer[ret_cnt++] = BatchItemOk;
+					returned_count++;
+				}
+
+				ToResultVector(ret_buffer, batch_status, ret_cnt - (1 + 2));
+				ToResultVector(ret_buffer, returned_count, ret_cnt - 2);
 				break;
 			}
 			case MsgVersion:
